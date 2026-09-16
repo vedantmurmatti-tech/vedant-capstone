@@ -1,0 +1,13 @@
+# Python
+Esmerelda/backend/venv/
+
+# Moodle browser session
+Esmerelda/backend/moodle/browser_profile/
+
+# Environment variables
+.env
+Esmerelda/backend/.env
+
+# Node
+Esmerelda/frontend/node_modules/
+Esmerelda/frontend/dist/
