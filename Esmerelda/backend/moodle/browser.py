@@ -27,6 +27,39 @@ def clean_course_name(text):
 
     return text
 
+def get_authenticated_page():
+    p = sync_playwright().start()
+
+    context = p.chromium.launch_persistent_context(
+        user_data_dir=str(PROFILE_DIR),
+        headless=False,
+        viewport={"width": 1400, "height": 900},
+    )
+
+    page = context.pages[0] if context.pages else context.new_page()
+
+    page.on("dialog", handle_dialog)
+
+    page.goto(
+        MOODLE_URL,
+        wait_until="domcontentloaded",
+        timeout=30000
+    )
+
+    page.wait_for_timeout(3000)
+
+    if "login" in page.url.lower():
+        print("Please log into Moodle.")
+        input("Press ENTER after reaching your dashboard...")
+
+        page.wait_for_timeout(2000)
+
+        if "login" in page.url.lower():
+            raise RuntimeError(
+                "Login was not completed. Still on Moodle login page."
+        )
+
+    return p, context, page
 
 def main():
 

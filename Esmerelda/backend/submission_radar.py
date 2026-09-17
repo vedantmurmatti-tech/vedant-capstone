@@ -1,3 +1,7 @@
+from ast import pattern
+from datetime import datetime
+from storage.database import init_db
+from storage.crud import save_assignment
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 import pyttsx3
@@ -86,7 +90,37 @@ def get_timeline(page):
 
     return timeline
 
+def extract_due_date(text, assignment):
+    pattern = re.compile(
+        r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s*"
+        r"(\d{1,2}\s+\w+\s+\d{4})\s+"
+        r"(\d{1,2}:\d{2})",
+        re.IGNORECASE
+    )
 
+    assignment_position = text.find(assignment)
+
+    if assignment_position == -1:
+        return None
+
+    matches = list(
+        pattern.finditer(text[:assignment_position])
+    )
+
+    if not matches:
+        return None
+
+    match = matches[-1]
+
+    date_text = f"{match.group(2)} {match.group(3)}"
+
+    try:
+        return datetime.strptime(
+            date_text,
+            "%d %B %Y %H:%M"
+        )
+    except ValueError:
+        return None
 # ============================================================
 # EXTRACT TIMELINE
 # ============================================================
@@ -148,21 +182,35 @@ def extract_timeline(page):
                 "assignment": assignment,
                 "url": href,
                 "course": None,
-                "raw_text": text
+                "raw_text": text,
+                "due_date": None
             }
 
             # Walk upward from the assignment link.
             parent = link
 
-            for _ in range(8):
+            for level in range(8):
 
                 parent = parent.locator("..")
 
                 try:
                     parent_text = parent.inner_text().strip()
-                except:
-                    break
+                    if event["due_date"] is None:
+                        parsed_date = extract_due_date(
+                            parent_text,
+                            event["assignment"]
+)
 
+                        if parsed_date:
+                            
+
+                            event["due_date"] = parsed_date
+                except Exception as error:
+                    
+                    break
+                    
+                    
+                    
                 # Look for course links inside this event container.
                 course_links = parent.locator(
                     'a[href*="/course/view.php"]'
@@ -183,16 +231,24 @@ def extract_timeline(page):
 
                         except:
                             continue
+                if not event["course"]:
 
-                if event["course"]:
-                    break
+                    course_pattern = re.compile(
+                        r"^(BUAN|DESG|VATS)\d+.*2026/27S1.*$",
+                        re.MULTILINE
+                )
 
-            events.append(event)
+                course_match = course_pattern.search(parent_text)
 
-        except Exception as e:
-            print("Could not process timeline link:", e)
+                if course_match:
+                    event["course"] = course_match.group(0).strip()
+        except Exception as error:
+            print(f"DEBUG ERROR at level {level}: {error}")
+            break
+        events.append(event)
 
     return deduplicate(events)
+                
 
 
 # ============================================================
@@ -286,7 +342,34 @@ def clean_course_name(course):
 
     return course
 
+def save_events_to_database(events):
+    init_db()
 
+    for event in events:
+        url = event.get("url")
+
+        if not url:
+            print(f"Skipping assignment without URL: {event['assignment']}")
+            continue
+
+        match = re.search(r"id=(\d+)", url)
+
+        if not match:
+            print(f"Could not find Moodle ID: {event['assignment']}")
+            continue
+
+        moodle_id = match.group(1)
+
+        saved_assignment = save_assignment(
+        moodle_id=moodle_id,
+        course_name=event["course"],
+        name=event["assignment"],
+        submission_url=url,
+        due_date=event["due_date"]
+    )
+
+        if saved_assignment:
+            print(f"Saved assignment: {saved_assignment.name}")
 # ============================================================
 # MAIN
 # ============================================================
@@ -307,6 +390,7 @@ def main():
             context, page = open_moodle(p)
 
             events = extract_timeline(page)
+            save_events_to_database(events)
 
             print("\n========================================")
             print(f"UNIQUE TIMELINE SUBMISSIONS: {len(events)}")
@@ -317,6 +401,7 @@ def main():
                 print("\nAssignment:", event["assignment"])
                 print("Course:", event["course"])
                 print("URL:", event["url"])
+                print("Due date:", event["due_date"])
 
             print("\n========================================")
 

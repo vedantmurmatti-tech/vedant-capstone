@@ -1,6 +1,8 @@
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 import re
+from storage.database import init_db
+from storage.crud import save_course
 
 MOODLE_URL = "https://lms.flame.edu.in"
 
@@ -139,6 +141,26 @@ def get_active_courses(page):
 
     return active_courses
 
+def save_courses_to_database(courses):
+    init_db()
+
+    for course in courses:
+        match = re.search(r"id=(\d+)", course["url"])
+
+        if not match:
+            print(f"Skipping course without Moodle ID: {course['name']}")
+            continue
+
+        moodle_id = match.group(1)
+
+        saved_course = save_course(
+            moodle_id=moodle_id,
+            name=course["name"],
+            short_name=None,
+            description=None
+        )
+
+        print(f"Saved to database: {saved_course.name}")
 
 def main():
 
@@ -149,6 +171,7 @@ def main():
         try:
 
             courses = get_active_courses(page)
+            save_courses_to_database(courses)
 
             print("\n========================================")
             print("COURSE RADAR COMPLETE")
