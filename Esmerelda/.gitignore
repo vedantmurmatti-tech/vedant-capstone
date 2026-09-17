@@ -11,3 +11,8 @@ Esmerelda/backend/.env
 # Node
 Esmerelda/frontend/node_modules/
 Esmerelda/frontend/dist/
+
+
+.env
+backend/venv/
+__pycache__/

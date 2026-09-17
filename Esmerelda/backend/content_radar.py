@@ -3,6 +3,9 @@ from datetime import datetime
 from pathlib import Path
 from playwright.sync_api import sync_playwright
 import re
+from storage.database import init_db
+from storage.crud import save_resource
+import hashlib
 
 MOODLE_URL = "https://lms.flame.edu.in"
 
@@ -11,6 +14,45 @@ PROFILE_DIR = BASE_DIR / "moodle" / "browser_profile"
 STATE_DIR = BASE_DIR / "state"
 SNAPSHOT_FILE = STATE_DIR / "content_snapshot.json"
 
+import json
+
+
+def load_snapshot():
+    if not SNAPSHOT_FILE.exists():
+        return []
+
+    try:
+        with open(SNAPSHOT_FILE, "r", encoding="utf-8") as file:
+            return json.load(file)
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def save_snapshot(items):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+    with open(SNAPSHOT_FILE, "w", encoding="utf-8") as file:
+        json.dump(items, file, indent=4, ensure_ascii=False)
+
+
+def find_new_items(old_items, current_items):
+    old_keys = {
+        (item["name"], item["url"])
+        for item in old_items
+    }
+
+    return [
+        item
+        for item in current_items
+        if (item["name"], item["url"]) not in old_keys
+    ]
+def generate_resource_id(url: str) -> str:
+    if "id=" in url:
+        return url.split("id=")[-1].split("&")[0]
+
+    return "url_" + hashlib.sha256(
+        url.encode("utf-8")
+    ).hexdigest()[:16]
 def handle_dialog(dialog):
     print(f"Moodle dialog: {dialog.message}")
     dialog.accept()
@@ -309,7 +351,7 @@ def main():
                     "url": "https://lms.flame.edu.in/course/view.php?id=24443"
                 },
                 {
-                    "name": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Learning",
+                    "name": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
                     "url": "https://lms.flame.edu.in/course/view.php?id=24444"
                 },
                 {
@@ -334,7 +376,17 @@ def main():
                     page,
                     course
                 )
+                for item in items:
+                    resource_id = generate_resource_id(item["url"])
 
+                    save_resource(
+                        moodle_id=resource_id,
+                        course_name=course["name"],
+                        name=item["name"],
+                        resource_type=item["type"],
+                        url=item["url"],
+                        description=item["section"]
+                    )
                 print_course_items(items)
 
                 all_items.extend(items)

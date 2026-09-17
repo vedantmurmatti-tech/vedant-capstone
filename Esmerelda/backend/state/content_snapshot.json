@@ -1,0 +1,1642 @@
+[
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "General",
+        "name": "Collapse all",
+        "type": "Activity",
+        "url": "#"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "General",
+        "name": "General",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176421"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "General",
+        "name": "Course Outline",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=239361"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "General",
+        "name": "Sheldon Ross - First Course in Probability",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=239368"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "General",
+        "name": "Andersen et al - Stats for Business and Econ",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=241524"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "General",
+        "name": "Statistics 110 - Harvard (Lecture Videos)",
+        "type": "Link",
+        "url": "https://lms.flame.edu.in/mod/url/view.php?id=239445"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "17 August - 23 August",
+        "name": "17 August - 23 August",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176422"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "17 August - 23 August",
+        "name": "Lecture Slides (Week 1) - Intro to Analytics",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=241527"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "24 August - 30 August",
+        "name": "24 August - 30 August",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176423"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "24 August - 30 August",
+        "name": "GDP Dataset",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=242578"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "24 August - 30 August",
+        "name": "Student Dataset",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=242782"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "24 August - 30 August",
+        "name": "GDP Dataset Workings",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=245005"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "24 August - 30 August",
+        "name": "Lecture Slides (Week 2) - Intro To Data",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=244119"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "24 August - 30 August",
+        "name": "Lecture Slides (Week 2) - Descriptive Statistics",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=244120"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "24 August - 30 August",
+        "name": "WTO BI Report",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=245003"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "31 August - 6 September",
+        "name": "31 August - 6 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176424"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "31 August - 6 September",
+        "name": "Lecture Slides (Week 3) - Probability Basics",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=245606"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "31 August - 6 September",
+        "name": "Preview Assignment",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=245208"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "31 August - 6 September",
+        "name": "Assignment 2 - Solutions",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=245607"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "7 September - 13 September",
+        "name": "7 September - 13 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176425"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "7 September - 13 September",
+        "name": "Assignment (9th Sep) Solution",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=246311"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "7 September - 13 September",
+        "name": "Conditional Probability",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=246562"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "14 September - 20 September",
+        "name": "14 September - 20 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176426"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "21 September - 27 September",
+        "name": "21 September - 27 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176427"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "28 September - 4 October",
+        "name": "28 September - 4 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176428"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "5 October - 11 October",
+        "name": "5 October - 11 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176429"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "12 October - 18 October",
+        "name": "12 October - 18 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176430"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "19 October - 25 October",
+        "name": "19 October - 25 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176431"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "26 October - 1 November",
+        "name": "26 October - 1 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176432"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "2 November - 8 November",
+        "name": "2 November - 8 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176433"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "9 November - 15 November",
+        "name": "9 November - 15 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176434"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "16 November - 22 November",
+        "name": "16 November - 22 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176435"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "23 November - 29 November",
+        "name": "23 November - 29 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176436"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "30 November - 6 December",
+        "name": "30 November - 6 December",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176437"
+    },
+    {
+        "course": "BUAN301-UGSEM5B-2026/27S1-Statistical Data Analysis and Visualisation",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24527",
+        "section": "7 December - 13 December",
+        "name": "7 December - 13 December",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176438"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "General",
+        "name": "Collapse all",
+        "type": "Activity",
+        "url": "#"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "General",
+        "name": "General",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176457"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "General",
+        "name": "Course Outline",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=237983"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "General",
+        "name": "Mid Term Quiz - 1",
+        "type": "Quiz",
+        "url": "https://lms.flame.edu.in/mod/quiz/view.php?id=241100"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "General",
+        "name": "Mid Term Quiz - 2",
+        "type": "Quiz",
+        "url": "https://lms.flame.edu.in/mod/quiz/view.php?id=241101"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "General",
+        "name": "Class Assignment - 1",
+        "type": "Assignment",
+        "url": "https://lms.flame.edu.in/mod/assign/view.php?id=241102"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "General",
+        "name": "Class Assignment - 2",
+        "type": "Assignment",
+        "url": "https://lms.flame.edu.in/mod/assign/view.php?id=241104"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "General",
+        "name": "Class Participation",
+        "type": "Assignment",
+        "url": "https://lms.flame.edu.in/mod/assign/view.php?id=241105"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "General",
+        "name": "Final Quiz",
+        "type": "Quiz",
+        "url": "https://lms.flame.edu.in/mod/quiz/view.php?id=241106"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "17 August - 23 August",
+        "name": "17 August - 23 August",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176458"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "17 August - 23 August",
+        "name": "Python Data Science Handbook",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=241548"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "17 August - 23 August",
+        "name": "Presentation Deck",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=242266"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "24 August - 30 August",
+        "name": "24 August - 30 August",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176459"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "31 August - 6 September",
+        "name": "31 August - 6 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176460"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "31 August - 6 September",
+        "name": "Script and Dataset for KNN Classifier",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=244685"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "31 August - 6 September",
+        "name": "Script for Cross validation and Worksheet for KNN",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=245357"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "7 September - 13 September",
+        "name": "7 September - 13 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176461"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "7 September - 13 September",
+        "name": "KNN Slides",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=245761"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "7 September - 13 September",
+        "name": "KNN Regression dataset and script",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=245806"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "7 September - 13 September",
+        "name": "Class assignment ZIP file",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=245811"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "14 September - 20 September",
+        "name": "14 September - 20 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176462"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "14 September - 20 September",
+        "name": "Credit dataset full script",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=246835"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "14 September - 20 September",
+        "name": "Complete guide to credit.csv solution script",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=246992"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "21 September - 27 September",
+        "name": "21 September - 27 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176463"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "28 September - 4 October",
+        "name": "28 September - 4 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176464"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "5 October - 11 October",
+        "name": "5 October - 11 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176465"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "12 October - 18 October",
+        "name": "12 October - 18 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176466"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "19 October - 25 October",
+        "name": "19 October - 25 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176467"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "26 October - 1 November",
+        "name": "26 October - 1 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176468"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "2 November - 8 November",
+        "name": "2 November - 8 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176469"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "9 November - 15 November",
+        "name": "9 November - 15 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176470"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "16 November - 22 November",
+        "name": "16 November - 22 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176471"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "23 November - 29 November",
+        "name": "23 November - 29 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176472"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "30 November - 6 December",
+        "name": "30 November - 6 December",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176473"
+    },
+    {
+        "course": "BUAN302-UGSEM5B-2026/27S1-Machine Learning - 1: Introduction",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24529",
+        "section": "7 December - 13 December",
+        "name": "7 December - 13 December",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=176474"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "General",
+        "name": "Collapse all",
+        "type": "Activity",
+        "url": "#"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "General",
+        "name": "General",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174909"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "General",
+        "name": "Course Outline",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=237811"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "General",
+        "name": "Assignment 1",
+        "type": "Assignment",
+        "url": "https://lms.flame.edu.in/mod/assign/view.php?id=245959"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "General",
+        "name": "Assignment 2",
+        "type": "Assignment",
+        "url": "https://lms.flame.edu.in/mod/assign/view.php?id=245960"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "General",
+        "name": "Mini Project",
+        "type": "Assignment",
+        "url": "https://lms.flame.edu.in/mod/assign/view.php?id=245962"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "General",
+        "name": "Final Project",
+        "type": "Assignment",
+        "url": "https://lms.flame.edu.in/mod/assign/view.php?id=245964"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "General",
+        "name": "Class Participation",
+        "type": "Assignment",
+        "url": "https://lms.flame.edu.in/mod/assign/view.php?id=245967"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "17 August - 23 August",
+        "name": "17 August - 23 August",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174910"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "24 August - 30 August",
+        "name": "24 August - 30 August",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174911"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "31 August - 6 September",
+        "name": "31 August - 6 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174912"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "7 September - 13 September",
+        "name": "7 September - 13 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174913"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "14 September - 20 September",
+        "name": "14 September - 20 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174914"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "21 September - 27 September",
+        "name": "21 September - 27 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174915"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "28 September - 4 October",
+        "name": "28 September - 4 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174916"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "5 October - 11 October",
+        "name": "5 October - 11 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174917"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "12 October - 18 October",
+        "name": "12 October - 18 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174918"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "19 October - 25 October",
+        "name": "19 October - 25 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174919"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "26 October - 1 November",
+        "name": "26 October - 1 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174920"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "2 November - 8 November",
+        "name": "2 November - 8 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174921"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "9 November - 15 November",
+        "name": "9 November - 15 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174922"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "16 November - 22 November",
+        "name": "16 November - 22 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174923"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "23 November - 29 November",
+        "name": "23 November - 29 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174924"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "30 November - 6 December",
+        "name": "30 November - 6 December",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174925"
+    },
+    {
+        "course": "DESG310-UGSEM5A-2026/27S1-Game Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24443",
+        "section": "7 December - 13 December",
+        "name": "7 December - 13 December",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174926"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "General",
+        "name": "Collapse all",
+        "type": "Activity",
+        "url": "#"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "General",
+        "name": "General",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174927"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "General",
+        "name": "Course Outline",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=237813"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "17 August - 23 August",
+        "name": "17 August - 23 August",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174928"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "24 August - 30 August",
+        "name": "24 August - 30 August",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174929"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "31 August - 6 September",
+        "name": "31 August - 6 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174930"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "7 September - 13 September",
+        "name": "7 September - 13 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174931"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "7 September - 13 September",
+        "name": "Assessment 1: Idea Lock-in, Plan & Repo Setup",
+        "type": "Assignment",
+        "url": "https://lms.flame.edu.in/mod/assign/view.php?id=246517"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "14 September - 20 September",
+        "name": "14 September - 20 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174932"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "14 September - 20 September",
+        "name": "Assessment 2: Custom Skill, an agent, 1-2 MCP, chained into one workflow",
+        "type": "Assignment",
+        "url": "https://lms.flame.edu.in/mod/assign/view.php?id=246561"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "14 September - 20 September",
+        "name": "Assessment 3: MVP",
+        "type": "Assignment",
+        "url": "https://lms.flame.edu.in/mod/assign/view.php?id=246658"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "21 September - 27 September",
+        "name": "21 September - 27 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174933"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "21 September - 27 September",
+        "name": "Final Capstone — Demo & Repo",
+        "type": "Assignment",
+        "url": "https://lms.flame.edu.in/mod/assign/view.php?id=246659"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "28 September - 4 October",
+        "name": "28 September - 4 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174934"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "5 October - 11 October",
+        "name": "5 October - 11 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174935"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "12 October - 18 October",
+        "name": "12 October - 18 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174936"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "19 October - 25 October",
+        "name": "19 October - 25 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174937"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "26 October - 1 November",
+        "name": "26 October - 1 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174938"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "2 November - 8 November",
+        "name": "2 November - 8 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174939"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "9 November - 15 November",
+        "name": "9 November - 15 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174940"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "16 November - 22 November",
+        "name": "16 November - 22 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174941"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "23 November - 29 November",
+        "name": "23 November - 29 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174942"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "30 November - 6 December",
+        "name": "30 November - 6 December",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174943"
+    },
+    {
+        "course": "DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24444",
+        "section": "7 December - 13 December",
+        "name": "7 December - 13 December",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174944"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "General",
+        "name": "Collapse all",
+        "type": "Activity",
+        "url": "#"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "General",
+        "name": "General",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174945"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "General",
+        "name": "Course Outline",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=237815"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "17 August - 23 August",
+        "name": "17 August - 23 August",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174946"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "17 August - 23 August",
+        "name": "Service Design Background",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=241918"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "24 August - 30 August",
+        "name": "24 August - 30 August",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174947"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "24 August - 30 August",
+        "name": "Assignment 01: Service Diagnostics",
+        "type": "Assignment",
+        "url": "https://lms.flame.edu.in/mod/assign/view.php?id=241467"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "24 August - 30 August",
+        "name": "What is a Service",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=242295"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "24 August - 30 August",
+        "name": "Project Brief Statement Template",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=242446"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "24 August - 30 August",
+        "name": "TRENDS Matrix and Grievances Mapping",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=243032"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "31 August - 6 September",
+        "name": "31 August - 6 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174948"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "31 August - 6 September",
+        "name": "What is Service Design + Touchpoints",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=244530"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "7 September - 13 September",
+        "name": "7 September - 13 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174949"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "14 September - 20 September",
+        "name": "14 September - 20 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174950"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "21 September - 27 September",
+        "name": "21 September - 27 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174951"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "28 September - 4 October",
+        "name": "28 September - 4 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174952"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "5 October - 11 October",
+        "name": "5 October - 11 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174953"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "12 October - 18 October",
+        "name": "12 October - 18 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174954"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "19 October - 25 October",
+        "name": "19 October - 25 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174955"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "26 October - 1 November",
+        "name": "26 October - 1 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174956"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "2 November - 8 November",
+        "name": "2 November - 8 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174957"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "9 November - 15 November",
+        "name": "9 November - 15 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174958"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "16 November - 22 November",
+        "name": "16 November - 22 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174959"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "23 November - 29 November",
+        "name": "23 November - 29 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174960"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "30 November - 6 December",
+        "name": "30 November - 6 December",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174961"
+    },
+    {
+        "course": "DESG320-UGSEM5A-2026/27S1-Service Design",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24445",
+        "section": "7 December - 13 December",
+        "name": "7 December - 13 December",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174962"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "General",
+        "name": "Collapse all",
+        "type": "Activity",
+        "url": "#"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "General",
+        "name": "General",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174963"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "General",
+        "name": "Course Outline",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=237817"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "17 August - 23 August",
+        "name": "17 August - 23 August",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174964"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "17 August - 23 August",
+        "name": "Group Documentation ( Bringing Outside Inside )",
+        "type": "Assignment",
+        "url": "https://lms.flame.edu.in/mod/assign/view.php?id=242426"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "17 August - 23 August",
+        "name": "Group Documentation ( Making Invisible Visible )",
+        "type": "Assignment",
+        "url": "https://lms.flame.edu.in/mod/assign/view.php?id=242428"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "24 August - 30 August",
+        "name": "24 August - 30 August",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174965"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "24 August - 30 August",
+        "name": "Personal Documentation",
+        "type": "Assignment",
+        "url": "https://lms.flame.edu.in/mod/assign/view.php?id=242256"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "24 August - 30 August",
+        "name": "Shadow through Time",
+        "type": "Activity",
+        "url": "https://nuntinee.com/shadow-through-time/"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "24 August - 30 August",
+        "name": "Happy Feedback Machine",
+        "type": "Activity",
+        "url": "https://www.kidmang.com/portfolio/projects/hfm.html"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "24 August - 30 August",
+        "name": "Shape Haptics",
+        "type": "Activity",
+        "url": "https://clementzheng.info/Shape-Haptics"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "24 August - 30 August",
+        "name": "Expressive Tactile Controls",
+        "type": "Activity",
+        "url": "https://hhayeon.com/Expressive-Tactile-Controls"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "24 August - 30 August",
+        "name": "make a MIDI trumpet",
+        "type": "Activity",
+        "url": "https://dylandawkinsblog.wordpress.com/2020/05/06/tangible-interaction-instrument-final/"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "24 August - 30 August",
+        "name": "first",
+        "type": "Activity",
+        "url": "https://jingyis-blog.webflow.io/posts/midi-project-fabrication"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "24 August - 30 August",
+        "name": "second phases of the construction",
+        "type": "Activity",
+        "url": "https://jingyis-blog.webflow.io/posts/midi-project-final"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "24 August - 30 August",
+        "name": "Comparing FIS-Dials",
+        "type": "Video",
+        "url": "https://vimeo.com/117047232"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "24 August - 30 August",
+        "name": "The Navy installed touch-screen steering systems to save money",
+        "type": "Activity",
+        "url": "https://features.propublica.org/navy-uss-mccain-crash/navy-installed-touch-screen-steering-ten-sailors-paid-with-their-lives/"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "24 August - 30 August",
+        "name": "Exploratorium cookbook : a construction manual for Exploratorium exhibits",
+        "type": "Activity",
+        "url": "https://search.library.nyu.edu/discovery/fulldisplay?docid=alma9998694226807876&context=L&vid=01NYU_INST:NYU&lang=en&search_scope=CI_NYU_CONSORTIA&adaptor=Local%20Search%20Engine&tab=Unified_Slot&query=any,contains,Exploratorium%20Cookbook"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "24 August - 30 August",
+        "name": "NOB",
+        "type": "Activity",
+        "url": "https://www.nobcontrol.com/"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "24 August - 30 August",
+        "name": "Dear Data",
+        "type": "Activity",
+        "url": "https://www.dear-data.com/all"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "24 August - 30 August",
+        "name": "Christine Sun Kim",
+        "type": "Activity",
+        "url": "https://ghebaly.com/artists/christine-sun-kim/"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "24 August - 30 August",
+        "name": "Arduino Style Guide for Creating Libraries",
+        "type": "Activity",
+        "url": "https://docs.arduino.cc/learn/contributions/arduino-library-style-guide/"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "31 August - 6 September",
+        "name": "31 August - 6 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174966"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "31 August - 6 September",
+        "name": "Group Documentation : Electronics and Form",
+        "type": "Assignment",
+        "url": "https://lms.flame.edu.in/mod/assign/view.php?id=244507"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "31 August - 6 September",
+        "name": "Final EXAM PART A - GROUP PRESENTATION",
+        "type": "Assignment",
+        "url": "https://lms.flame.edu.in/mod/assign/view.php?id=244509"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "7 September - 13 September",
+        "name": "7 September - 13 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174967"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "14 September - 20 September",
+        "name": "14 September - 20 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174968"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "21 September - 27 September",
+        "name": "21 September - 27 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174969"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "28 September - 4 October",
+        "name": "28 September - 4 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174970"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "28 September - 4 October",
+        "name": "Final EXAM PART B- Submission",
+        "type": "Assignment",
+        "url": "https://lms.flame.edu.in/mod/assign/view.php?id=245504"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "5 October - 11 October",
+        "name": "5 October - 11 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174971"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "12 October - 18 October",
+        "name": "12 October - 18 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174972"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "19 October - 25 October",
+        "name": "19 October - 25 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174973"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "26 October - 1 November",
+        "name": "26 October - 1 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174974"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "2 November - 8 November",
+        "name": "2 November - 8 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174975"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "9 November - 15 November",
+        "name": "9 November - 15 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174976"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "16 November - 22 November",
+        "name": "16 November - 22 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174977"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "23 November - 29 November",
+        "name": "23 November - 29 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174978"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "30 November - 6 December",
+        "name": "30 November - 6 December",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174979"
+    },
+    {
+        "course": "DESG322-UGSEM5-2026/27S1-Tangible Interfaces",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24446",
+        "section": "7 December - 13 December",
+        "name": "7 December - 13 December",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=174980"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "General",
+        "name": "Collapse all",
+        "type": "Activity",
+        "url": "#"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "General",
+        "name": "General",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=180198"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "General",
+        "name": "Course Outline",
+        "type": "Resource",
+        "url": "https://lms.flame.edu.in/mod/resource/view.php?id=242768"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "17 August - 23 August",
+        "name": "17 August - 23 August",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=180199"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "24 August - 30 August",
+        "name": "24 August - 30 August",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=180200"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "31 August - 6 September",
+        "name": "31 August - 6 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=180201"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "7 September - 13 September",
+        "name": "7 September - 13 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=180202"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "14 September - 20 September",
+        "name": "14 September - 20 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=180203"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "21 September - 27 September",
+        "name": "21 September - 27 September",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=180204"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "28 September - 4 October",
+        "name": "28 September - 4 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=180205"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "5 October - 11 October",
+        "name": "5 October - 11 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=180206"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "12 October - 18 October",
+        "name": "12 October - 18 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=180207"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "19 October - 25 October",
+        "name": "19 October - 25 October",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=180208"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "26 October - 1 November",
+        "name": "26 October - 1 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=180209"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "2 November - 8 November",
+        "name": "2 November - 8 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=180210"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "9 November - 15 November",
+        "name": "9 November - 15 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=180211"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "16 November - 22 November",
+        "name": "16 November - 22 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=180212"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "23 November - 29 November",
+        "name": "23 November - 29 November",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=180213"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "30 November - 6 December",
+        "name": "30 November - 6 December",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=180214"
+    },
+    {
+        "course": "VATS301-UGSEM3-2026/27S1-Technology and Society",
+        "course_url": "https://lms.flame.edu.in/course/view.php?id=24834",
+        "section": "7 December - 13 December",
+        "name": "7 December - 13 December",
+        "type": "Activity",
+        "url": "https://lms.flame.edu.in/course/section.php?id=180215"
+    }
+]
