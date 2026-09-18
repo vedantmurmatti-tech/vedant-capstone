@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Menu, RadioTower, RefreshCw, AlertTriangle, Loader2 } from "lucide-react";
 import { useAsync } from "@/lib/useAsync";
-import { getMoodleSyncStatus } from "@/lib/api";
+import { getMoodleSyncStatus, triggerMoodleSync } from "@/lib/api";
 import { relativeTimeFromNow, cn } from "@/lib/utils";
 import type { MoodleSyncState } from "@/types";
 
@@ -27,14 +27,64 @@ function useClock() {
 }
 
 export function Header({ title, onMenuClick }: HeaderProps) {
-  const { data: status, error: statusError } = useAsync(getMoodleSyncStatus, []);
+  const { data: status, error: statusError, refetch } = useAsync(getMoodleSyncStatus, []);
+  const [triggering, setTriggering] = useState(false);
+  const [triggerError, setTriggerError] = useState<string | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const isSyncing = triggering || status?.state === "syncing";
+
+  useEffect(() => {
+    // While a sync is in progress (either we just triggered one, or the
+    // backend reports one already running), poll /api/sync-status so the
+    // pill reflects real completion/failure instead of staying stuck on
+    // "Syncing" until the next unrelated re-render.
+    if (isSyncing && !pollRef.current) {
+      pollRef.current = setInterval(refetch, 3000);
+    } else if (!isSyncing && pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+  }, [isSyncing, refetch]);
+
+  async function handleSyncClick() {
+    if (isSyncing) return;
+    setTriggerError(null);
+    setTriggering(true);
+    try {
+      await triggerMoodleSync();
+      refetch();
+    } catch (err) {
+      setTriggerError(err instanceof Error ? err.message : "Could not start sync.");
+    } finally {
+      setTriggering(false);
+    }
+  }
+
   const meta = statusError
     ? { label: "Backend offline", icon: AlertTriangle, className: "text-status-critical" }
-    : status
-      ? syncMeta[status.state]
-      : null;
+    : triggerError
+      ? { label: "Sync error", icon: AlertTriangle, className: "text-status-critical" }
+      : isSyncing
+        ? syncMeta.syncing
+        : status
+          ? syncMeta[status.state]
+          : null;
   const SyncIcon = meta?.icon;
   const now = useClock();
+  const tooltip = triggerError
+    ? triggerError
+    : status?.state === "error" && status.lastError
+      ? status.lastError
+      : status?.lastSyncedAt
+        ? `Last synced ${relativeTimeFromNow(status.lastSyncedAt)}`
+        : undefined;
 
   return (
     <header className="sticky top-0 z-20 flex items-center justify-between border-b border-graphite-700/60 bg-graphite-950/80 px-4 py-3.5 backdrop-blur-md sm:px-6">
@@ -57,16 +107,21 @@ export function Header({ title, onMenuClick }: HeaderProps) {
           {now.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
         </span>
         {meta && SyncIcon && (
-          <div
+          <button
+            type="button"
+            onClick={handleSyncClick}
+            disabled={isSyncing || !!statusError}
+            title={tooltip}
             className={cn(
-              "flex items-center gap-2 rounded-full border border-graphite-700/70 bg-graphite-850/70 px-3 py-1.5 text-xs font-medium",
+              "flex items-center gap-2 rounded-full border border-graphite-700/70 bg-graphite-850/70 px-3 py-1.5 text-xs font-medium transition-colors",
+              !isSyncing && !statusError && "hover:bg-graphite-700/60",
+              (isSyncing || statusError) && "cursor-default",
               meta.className
             )}
-            title={status?.lastSyncedAt ? `Last synced ${relativeTimeFromNow(status.lastSyncedAt)}` : undefined}
           >
             <SyncIcon size={13} strokeWidth={2} />
-            <span className="hidden sm:inline">{meta.label}</span>
-          </div>
+            <span className="hidden sm:inline">{isSyncing ? "Syncing…" : meta.label}</span>
+          </button>
         )}
       </div>
     </header>

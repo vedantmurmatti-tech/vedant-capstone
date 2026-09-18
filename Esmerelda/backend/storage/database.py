@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from .paths import get_database_path
@@ -21,10 +21,29 @@ class Base(DeclarativeBase):
     pass
 
 
+def _migrate_add_missing_columns() -> None:
+    """`Base.metadata.create_all()` only creates whole tables that don't
+    exist yet — it never adds a column to a table that's already there.
+    `assignments.submission_status` (added for the Moodle sync pipeline's
+    submission-status tracking) needs exactly that on any database created
+    before this column existed, so it's added here explicitly, guarded by
+    a PRAGMA check so re-running this on an already-migrated or brand-new
+    database (which create_all() will have created with the column
+    already present) is a safe no-op."""
+    with engine.connect() as conn:
+        existing_columns = {
+            row[1] for row in conn.execute(text("PRAGMA table_info(assignments)"))
+        }
+        if existing_columns and "submission_status" not in existing_columns:
+            conn.execute(text("ALTER TABLE assignments ADD COLUMN submission_status VARCHAR(255)"))
+            conn.commit()
+
+
 def init_db():
     from . import models
 
     Base.metadata.create_all(bind=engine)
+    _migrate_add_missing_columns()
 
 
 if __name__ == "__main__":

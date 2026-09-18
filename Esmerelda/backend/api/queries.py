@@ -10,7 +10,7 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from storage.models import Assignment, Course, Document, DocumentVersion, Resource
+from storage.models import Assignment, Course, Document, DocumentVersion, Resource, SyncRun
 
 from .presenters import derive_file_type, derive_short_name
 from .schemas import AssignmentOut, CourseOut, DocumentOut, ResourceOut, SyncStatusOut
@@ -144,12 +144,36 @@ def fetch_document(db: Session, document_id: int) -> Document | None:
 
 def fetch_sync_status(db: Session) -> SyncStatusOut:
     courses_count = db.query(func.count(Course.id)).scalar() or 0
-    last_synced_at = db.query(func.max(DocumentVersion.created_at)).scalar()
+    latest_run = db.scalar(select(SyncRun).order_by(SyncRun.id.desc()))
 
+    if latest_run is None:
+        # No sync has ever run through the Moodle sync pipeline (moodle/sync_service.py)
+        # on this database — fall back to the pre-sync-pipeline heuristic (a document
+        # having been downloaded at some point) so an existing, already-populated local
+        # database doesn't regress to "stale" the moment this code ships.
+        last_synced_at = db.query(func.max(DocumentVersion.created_at)).scalar()
+        return SyncStatusOut(
+            state="synced" if last_synced_at else "stale",
+            lastSyncedAt=last_synced_at,
+            coursesTracked=courses_count,
+            lastError=None,
+        )
+
+    if latest_run.status == "running":
+        state = "syncing"
+    elif latest_run.status == "error":
+        state = "error"
+    else:
+        state = "synced"
+
+    last_success = db.scalar(
+        select(SyncRun).where(SyncRun.status == "success").order_by(SyncRun.id.desc())
+    )
     return SyncStatusOut(
-        state="synced" if last_synced_at else "stale",
-        lastSyncedAt=last_synced_at,
+        state=state,
+        lastSyncedAt=last_success.finished_at if last_success else None,
         coursesTracked=courses_count,
+        lastError=latest_run.error_message if latest_run.status == "error" else None,
     )
 
 

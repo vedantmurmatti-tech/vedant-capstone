@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+import logging
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -14,10 +16,38 @@ from .schemas import (
     DocumentOut,
     ResourceOut,
     SyncStatusOut,
+    SyncTriggerOut,
 )
+from storage.crud import create_sync_run, finish_sync_run, get_running_sync_run
 from storage.paths import resolve_document_path
 
+logger = logging.getLogger("esmerelda.sync")
+
 router = APIRouter(prefix="/api")
+
+
+def _run_moodle_sync(run_id: int) -> None:
+    # Imported lazily so a machine that never triggers a sync (e.g. this
+    # process running with Playwright uninstalled, per the Dockerfile's
+    # deliberate exclusion — see BUILD_LOG.md) never pays the import cost
+    # or risks an ImportError anywhere except inside this one background task.
+    from moodle.sync_service import MoodleCredentialsError, MoodleLoginError, MoodleSyncError, run_sync
+
+    try:
+        result = run_sync()
+        finish_sync_run(
+            run_id,
+            status="success",
+            courses_synced=result.courses_synced,
+            assignments_synced=result.assignments_synced,
+            resources_synced=result.resources_synced,
+        )
+    except (MoodleCredentialsError, MoodleLoginError, MoodleSyncError) as exc:
+        logger.warning("Moodle sync run %s failed: %s", run_id, exc)
+        finish_sync_run(run_id, status="error", error_message=str(exc))
+    except Exception as exc:  # noqa: BLE001 - last-resort guard so a background task never crashes silently
+        logger.exception("Moodle sync run %s failed unexpectedly", run_id)
+        finish_sync_run(run_id, status="error", error_message=f"Unexpected error: {exc}")
 
 
 @router.get("/courses", response_model=list[CourseOut])
@@ -78,6 +108,16 @@ def download_document(document_id: int, db: Session = Depends(get_db)):
 @router.get("/sync-status", response_model=SyncStatusOut)
 def get_sync_status(db: Session = Depends(get_db)):
     return queries.fetch_sync_status(db)
+
+
+@router.post("/sync/moodle", response_model=SyncTriggerOut, status_code=202)
+def trigger_moodle_sync(background_tasks: BackgroundTasks):
+    if get_running_sync_run() is not None:
+        raise HTTPException(status_code=409, detail="A Moodle sync is already in progress.")
+
+    run = create_sync_run()
+    background_tasks.add_task(_run_moodle_sync, run.id)
+    return SyncTriggerOut(runId=run.id, state="syncing")
 
 
 @router.get("/dashboard/summary", response_model=DashboardSummaryOut)

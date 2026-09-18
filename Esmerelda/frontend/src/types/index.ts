@@ -63,6 +63,12 @@ export interface MoodleSyncStatus {
   lastSyncedAt: string | null; // ISO 8601
   coursesTracked: number;
   message?: string;
+  lastError?: string | null;
+}
+
+export interface SyncTriggerResponse {
+  runId: number;
+  state: MoodleSyncState;
 }
 
 export interface DashboardSummary {
