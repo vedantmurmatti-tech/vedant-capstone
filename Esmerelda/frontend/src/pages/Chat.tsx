@@ -102,8 +102,8 @@ export default function Chat() {
                   pending ? "animate-pulse bg-cyan-400" : reachable ? "bg-status-success" : "bg-status-critical"
                 )}
               />
-              {pending ? "Thinking…" : reachable ? "Online" : "Unreachable"} · rule-based agent over your real course
-              data, not a generative model
+              {pending ? "Thinking…" : reachable ? "Online" : "Unreachable"} · Gemini, grounded in your real Moodle
+              data
             </p>
           </div>
         </div>

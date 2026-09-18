@@ -88,6 +88,20 @@ class ChatSourceOut(BaseModel):
     courseName: str
 
 
+class McpCallOut(BaseModel):
+    """One real MCP tools/call invocation that actually happened during
+    this chat turn — see backend/api/mcp_bridge.py. Only ever populated
+    from LoggingSqliteSession.call_tool() having genuinely run; never
+    fabricated, and correctly empty on turns that didn't need it."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    server: str
+    tool: str
+    arguments: dict
+    isError: bool
+
+
 class ChatResponseOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -97,3 +111,4 @@ class ChatResponseOut(BaseModel):
     documents: list[DocumentOut] = []
     sources: list[ChatSourceOut] = []
     followUps: list[str] = []
+    mcpCalls: list[McpCallOut] = []
