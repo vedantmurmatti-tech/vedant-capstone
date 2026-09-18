@@ -7,7 +7,7 @@ phase) call the exact same functions instead of duplicating query logic.
 
 from datetime import datetime
 
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from storage.models import Assignment, Course, Document, DocumentVersion, Resource
@@ -94,6 +94,19 @@ def fetch_course_assignments(db: Session, course_id: int) -> list[Assignment]:
 
 def fetch_course_resources(db: Session, course_id: int) -> list[Resource]:
     return db.query(Resource).filter(Resource.course_id == course_id).order_by(Resource.name).all()
+
+
+def fetch_resource_by_moodle_id(db: Session, moodle_id: str) -> Resource | None:
+    """content_radar.py gives an assignment's own Moodle activity link a
+    Resource row sharing the same moodle_id as the Assignment — this is
+    the real, reliable join between the two tables, used by the
+    assignment-action-planner Skill to find an assignment's own resource
+    entry (and, from there, any document downloaded for it)."""
+    return db.scalar(select(Resource).where(Resource.moodle_id == moodle_id))
+
+
+def fetch_documents_for_resource(db: Session, resource_id: int) -> list[Document]:
+    return db.query(Document).filter(Document.resource_id == resource_id).all()
 
 
 def fetch_all_assignments(db: Session) -> list[tuple[Assignment, Course]]:

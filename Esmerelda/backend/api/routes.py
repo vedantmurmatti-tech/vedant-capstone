@@ -92,5 +92,5 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
 
 
 @router.post("/chat", response_model=ChatResponseOut)
-def chat(payload: ChatRequestIn, db: Session = Depends(get_db)):
-    return handle_chat_message(db, payload.message)
+async def chat(payload: ChatRequestIn, db: Session = Depends(get_db)):
+    return await handle_chat_message(db, payload.message)
