@@ -1,6 +1,6 @@
 /**
  * API service layer — talks to the real FastAPI backend (backend/api/routes.py,
- * mounted from backend/venv/main.py). Every function here does exactly one
+ * mounted from backend/main.py). Every function here does exactly one
  * `apiFetch` call; pages only ever import from this module, never touch
  * `fetch` directly, and never fall back to mock data on failure.
  *
