@@ -120,6 +120,34 @@ def trigger_moodle_sync(background_tasks: BackgroundTasks):
     return SyncTriggerOut(runId=run.id, state="syncing")
 
 
+@router.get("/sync/moodle/diagnostics")
+def get_moodle_login_diagnostics():
+    """TEMPORARY, diagnostic-only endpoint — added specifically to pull
+    the real, sanitized post-login page state out of a running Render
+    instance without needing shell/log access, after a login failure
+    persisted there despite working locally. See BUILD_LOG.md.
+
+    Returns whatever moodle/sync_service.py's last _login() attempt in
+    this process captured — three stage-by-stage snapshots (URL, title,
+    form presence, .usermenu/logout-link presence, any Moodle login-error
+    text, a sanitized dump of visible page text, and the forms/inputs
+    present, values never included). Every field was already sanitized at
+    capture time (moodle/sync_service.py's _sanitize_text()) — the
+    username, password, and any email-shaped or opaque-token-shaped text
+    are redacted before this data is ever held in memory, so this
+    endpoint has nothing further to strip.
+
+    Empty list if no sync has attempted a login yet in this process
+    (e.g. right after a fresh deploy, before the first trigger).
+
+    Remove this endpoint (and moodle/sync_service.py's matching capture
+    code) once the investigation it was added for is complete.
+    """
+    from moodle.sync_service import get_last_login_diagnostics
+
+    return {"diagnostics": get_last_login_diagnostics()}
+
+
 @router.get("/dashboard/summary", response_model=DashboardSummaryOut)
 def get_dashboard_summary(db: Session = Depends(get_db)):
     courses_count, assignments_count, documents_count = queries.fetch_dashboard_counts(db)
