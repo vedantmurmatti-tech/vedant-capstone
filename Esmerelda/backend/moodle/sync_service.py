@@ -24,8 +24,22 @@ Docker image (backend/Dockerfile) deliberately excludes Playwright, since
 until now nothing in the deployed API needed it — triggering a sync from
 a deployed container will fail with a clear MoodleSyncError, not a crash,
 until that image is updated to include Playwright and its browser binary.
+
+Session isolation (see BUILD_LOG.md's "repeated syncs fail after the
+first" diagnosis): run_sync() launches a brand-new Chromium *browser*
+process every call (`p.chromium.launch(...)`, inside a fresh
+`sync_playwright()` context), and now also explicitly opens a brand-new
+*browser context* on it (`browser.new_context()`) rather than relying on
+`browser.new_page()`'s implicit default context. Playwright never persists
+cookies/localStorage outside of an explicit `storage_state`/
+`launch_persistent_context` call — neither is used here — so no state
+from one run_sync() call can leak into the next one; this was confirmed,
+not assumed (see the regression test in tests/test_sync_service.py). The
+actual bug was in how login *success* was judged, not in session reuse —
+see _login()'s docstring below.
 """
 
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -36,6 +50,21 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 from storage.crud import save_assignment, save_course, save_resource
 
 MOODLE_URL_DEFAULT = "https://lms.flame.edu.in"
+
+logger = logging.getLogger("esmerelda.moodle_sync")
+
+# DOM signals used to judge login state — deliberately NOT the page URL.
+# A prior version decided success purely by whether "login" was still a
+# substring of page.url after submitting, which is fragile: some Moodle
+# installs route through an intermediate URL that also happens to contain
+# "login" (e.g. a wantsurl/returnurl query parameter) even after a
+# genuinely successful login, and the login page's own URL can also
+# change between visits (a session-carrying query string, a locale
+# prefix, etc.) without that meaning anything about whether login
+# succeeded. These selectors are standard across Moodle's default theme.
+_LOGIN_FORM_SELECTOR = "#login #username, form#login"
+_LOGIN_ERROR_SELECTOR = "#loginerrormessage, .loginerrors, .alert-danger"
+_LOGGED_IN_MARKER_SELECTOR = "a[href*='/login/logout.php'], .usermenu"
 
 
 class MoodleCredentialsError(Exception):
@@ -73,15 +102,92 @@ def _get_credentials() -> tuple[str, str, str]:
     return username, password, moodle_url
 
 
+def _log_diagnostics(page, stage: str) -> None:
+    """Safe, credential-free diagnostic logging of exactly where the login
+    flow stands. Never logs a form field's value, a cookie, a token, or
+    any other session data — only the URL, page title, and whether
+    specific, non-secret DOM elements are present."""
+    try:
+        url = page.url
+    except Exception:
+        url = "<unavailable>"
+    try:
+        title = page.title()
+    except Exception:
+        title = "<unavailable>"
+    try:
+        login_form_present = page.locator(_LOGIN_FORM_SELECTOR).count() > 0
+    except Exception:
+        login_form_present = None
+    try:
+        logged_in_marker_present = page.locator(_LOGGED_IN_MARKER_SELECTOR).count() > 0
+    except Exception:
+        logged_in_marker_present = None
+    try:
+        error_el = page.locator(_LOGIN_ERROR_SELECTOR).first
+        error_message = error_el.inner_text().strip()[:200] if error_el.count() > 0 else None
+    except Exception:
+        error_message = None
+
+    logger.info(
+        "[moodle-login] stage=%s url=%s title=%r login_form_present=%s logged_in_marker_present=%s error_message=%r",
+        stage, url, title, login_form_present, logged_in_marker_present, error_message,
+    )
+
+
+def _is_logged_in(page) -> bool:
+    try:
+        return page.locator(_LOGGED_IN_MARKER_SELECTOR).count() > 0
+    except Exception:
+        return False
+
+
+def _has_login_form(page) -> bool:
+    try:
+        return page.locator(_LOGIN_FORM_SELECTOR).count() > 0
+    except Exception:
+        return False
+
+
+def _login_error_text(page) -> str | None:
+    try:
+        error_el = page.locator(_LOGIN_ERROR_SELECTOR).first
+        if error_el.count() == 0:
+            return None
+        return error_el.inner_text().strip()[:300] or None
+    except Exception:
+        return None
+
+
 def _login(page, moodle_url: str, username: str, password: str) -> None:
+    """Logs in and confirms success using real, logged-in-only DOM
+    elements — not the page URL. A previous version treated "the URL no
+    longer contains the substring 'login'" as proof of success, which is
+    unreliable: Moodle can redirect through (or land on) a URL that still
+    contains "login" as a substring even after a genuinely successful
+    login (e.g. a wantsurl/returnurl query parameter carried through the
+    redirect chain), and the login page's own URL isn't guaranteed
+    identical across visits either. Judging success by a concrete,
+    logged-in-only marker element (see _LOGGED_IN_MARKER_SELECTOR) instead
+    is what actually distinguishes "authenticated" from "not"."""
     try:
         page.goto(moodle_url, wait_until="domcontentloaded", timeout=30000)
     except Exception as exc:
         raise MoodleSyncError(f"Could not reach Moodle at the configured URL: {exc}") from exc
 
-    if "login" not in page.url.lower():
-        # Already has a valid persisted session (e.g. a reused browser profile) — nothing to do.
-        return
+    _log_diagnostics(page, "before_login")
+
+    if not _has_login_form(page):
+        if _is_logged_in(page):
+            # A genuinely already-authenticated session on this fresh context/page
+            # (e.g. Moodle itself redirected straight past the login form for some
+            # reason) — nothing more to do.
+            return
+        raise MoodleSyncError(
+            "Moodle showed neither a login form nor a logged-in page after navigating "
+            "to the configured URL — the page structure may not match what this sync "
+            "service expects. See the logged diagnostics for the real URL/title."
+        )
 
     try:
         page.fill("#username", username)
@@ -92,17 +198,37 @@ def _login(page, moodle_url: str, username: str, password: str) -> None:
     except Exception as exc:
         raise MoodleLoginError(f"Failed to submit Moodle's login form: {exc}") from exc
 
+    _log_diagnostics(page, "immediately_after_submit")
+
+    # Give Moodle's redirect chain time to settle rather than racing it —
+    # wait for the network to go quiet, but don't treat a timeout here as
+    # fatal by itself; the DOM checks below are still the real verdict.
     try:
-        page.wait_for_url(re.compile(r"^(?!.*login).*"), timeout=20000)
+        page.wait_for_load_state("networkidle", timeout=15000)
     except PlaywrightTimeoutError:
-        # Still on the login page after submitting — either the credentials were
-        # wrong, or Moodle is showing an error/CAPTCHA. Either way, this is a
-        # login failure, not a network/structural one — never include the
-        # password in the exception message.
+        pass
+
+    _log_diagnostics(page, "after_waiting_for_redirect")
+
+    if _is_logged_in(page) and not _has_login_form(page):
+        return
+
+    error_message = _login_error_text(page)
+    if error_message:
+        raise MoodleLoginError(f"Moodle rejected the login: {error_message}")
+
+    if _has_login_form(page):
         raise MoodleLoginError(
-            "Moodle did not accept the configured credentials (still on the login page "
-            "after submitting). Check MOODLE_USERNAME/MOODLE_PASSWORD."
+            "Moodle did not accept the configured credentials (the login form is still "
+            "present, with no error message shown, after submitting). Check "
+            "MOODLE_USERNAME/MOODLE_PASSWORD."
         )
+
+    raise MoodleLoginError(
+        "Could not confirm Moodle login succeeded (no logged-in page marker was found "
+        "after submitting, and the login form is gone). See the logged diagnostics for "
+        "the real page state."
+    )
 
 
 def _detect_active_courses(page) -> list[dict]:
@@ -345,8 +471,18 @@ def run_sync() -> SyncResult:
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
+            context = None
             try:
-                page = browser.new_page()
+                # Explicit, fresh, isolated context per call — deliberately not
+                # `browser.new_page()`'s implicit default context, and never a
+                # `launch_persistent_context()`/reused `storage_state`. This is
+                # what guarantees every sync starts with zero cookies,
+                # localStorage, or session state carried over from a previous
+                # run — confirmed by tests/test_sync_service.py's regression
+                # test, which runs this exact sequence twice end-to-end against
+                # a real local login page and asserts both succeed identically.
+                context = browser.new_context()
+                page = context.new_page()
                 _login(page, moodle_url, username, password)
 
                 active_courses = _detect_active_courses(page)
@@ -362,6 +498,8 @@ def run_sync() -> SyncResult:
                 if active_courses:
                     result.assignments_synced = _sync_course_assignments(page, active_courses)
             finally:
+                if context is not None:
+                    context.close()
                 browser.close()
     except (MoodleCredentialsError, MoodleLoginError, MoodleSyncError):
         raise
