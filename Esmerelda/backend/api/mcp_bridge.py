@@ -53,9 +53,14 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 import mcp.types as mcp_types
 
-BACKEND_DIR = Path(__file__).resolve().parent.parent
-LIVE_DB_PATH = BACKEND_DIR / "storage" / "esmerelda.db"
-READONLY_SNAPSHOT_PATH = BACKEND_DIR / "storage" / "_esmerelda_mcp_readonly_snapshot.db"
+from storage.paths import get_database_path, get_mcp_readonly_snapshot_path
+
+# Sourced from storage/paths.py (respects ESMERELDA_DATA_DIR when set) so
+# this bridge always snapshots the same live database the rest of the app
+# reads/writes, instead of separately hardcoding `storage/` — nothing
+# about the MCP protocol/session/read-only-enforcement logic below changed.
+LIVE_DB_PATH = get_database_path()
+READONLY_SNAPSHOT_PATH = get_mcp_readonly_snapshot_path()
 
 _ALLOWED_TOOLS = {"read_query", "list_tables", "describe_table"}
 

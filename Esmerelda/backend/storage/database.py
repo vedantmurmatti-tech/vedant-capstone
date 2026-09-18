@@ -1,11 +1,12 @@
-from pathlib import Path
-
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
+from .paths import get_database_path
 
-BASE_DIR = Path(__file__).resolve().parent
-DATABASE_URL = f"sqlite:///{BASE_DIR / 'esmerelda.db'}"
+# get_database_path() resolves to backend/storage/esmerelda.db by default
+# (ESMERELDA_DATA_DIR unset — unchanged local behavior), or under
+# ESMERELDA_DATA_DIR when it's set. See storage/paths.py.
+DATABASE_URL = f"sqlite:///{get_database_path()}"
 
 engine = create_engine(DATABASE_URL, echo=False)
 

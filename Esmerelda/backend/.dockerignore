@@ -1,0 +1,19 @@
+venv/
+__pycache__/
+*.pyc
+.env
+tests/
+
+# Local-only Moodle/Playwright automation — not part of the deployed API.
+moodle/
+content_radar.py
+course_radar.py
+submission_radar.py
+voice.py
+browser_profile/
+state/
+
+# Local persistent data — not baked into the image; production data
+# lives under ESMERELDA_DATA_DIR (see storage/paths.py) instead.
+storage/esmerelda.db
+storage/documents/

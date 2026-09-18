@@ -1,5 +1,3 @@
-import os
-
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
@@ -17,6 +15,7 @@ from .schemas import (
     ResourceOut,
     SyncStatusOut,
 )
+from storage.paths import resolve_document_path
 
 router = APIRouter(prefix="/api")
 
@@ -70,9 +69,10 @@ def download_document(document_id: int, db: Session = Depends(get_db)):
     document = queries.fetch_document(db, document_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Document not found")
-    if not os.path.isfile(document.file_path):
+    resolved_path = resolve_document_path(document.file_path)
+    if not resolved_path.is_file():
         raise HTTPException(status_code=404, detail="File is no longer available on disk")
-    return FileResponse(document.file_path, filename=document.name)
+    return FileResponse(resolved_path, filename=document.name)
 
 
 @router.get("/sync-status", response_model=SyncStatusOut)

@@ -9,10 +9,10 @@ from moodle.browser import get_authenticated_page
 from storage.database import SessionLocal
 from storage.models import Resource
 from storage.crud import save_document
+from storage.paths import get_documents_dir
 
 
-BASE_DIR = Path(__file__).resolve().parent.parent
-DOCUMENTS_DIR = BASE_DIR / "storage" / "documents"
+DOCUMENTS_DIR = get_documents_dir()
 
 DOCUMENTS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -165,9 +165,13 @@ def process_resource(page, resource):
 
     file_hash = calculate_file_hash(destination)
 
+    # Store a filename relative to DOCUMENTS_DIR, not an absolute path —
+    # portable across machines/environments. See storage/paths.py, which
+    # both this downloader and the /api/documents/{id}/download route
+    # resolve against, and BUILD_LOG.md for why this changed.
     save_document(
         name=destination.name,
-        file_path=str(destination),
+        file_path=destination.name,
         file_hash=file_hash,
         resource_id=resource.id
     )
