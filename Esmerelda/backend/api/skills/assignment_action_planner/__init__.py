@@ -19,6 +19,7 @@ Entrypoints:
                            redesign deliberately leaves alone.
 """
 
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -39,8 +40,38 @@ _RECOMMENDATION: dict[Urgency, str] = {
     "unscheduled": "no due date recorded — confirm on the course page",
 }
 
-# backend/api/skills/assignment_action_planner/__init__.py -> repo root
-_REPO_ROOT = Path(__file__).resolve().parents[5]
+
+def _find_repo_root(start: Path) -> Path:
+    """Locates the repo root that holds BUILD_LOG.md, without assuming a
+    fixed directory depth.
+
+    Locally, `start` (this file's containing directory) is 5 levels below
+    the repo root (backend/api/skills/assignment_action_planner/ ->
+    backend/api/skills/ -> backend/api/ -> backend/ -> Esmerelda/ ->
+    <repo root>), which a previous version hardcoded as
+    `Path(__file__).resolve().parents[5]`. Inside the Docker image, only
+    backend/'s own contents are copied to /app (see backend/Dockerfile) —
+    BUILD_LOG.md doesn't exist there at all, and /app is only 4 levels
+    below the filesystem root, so `parents[5]` raised `IndexError: 5` and
+    crashed the whole module at import time.
+
+    `ESMERELDA_REPO_ROOT` can override this explicitly if ever needed.
+    Otherwise this walks upward from `start` looking for BUILD_LOG.md,
+    and falls back to `start` itself if it's never found (e.g. inside
+    the container) — search_local_evidence() below already treats a
+    missing BUILD_LOG.md as "no evidence found", not an error, so a
+    fallback path that simply doesn't exist is safe.
+    """
+    override = os.environ.get("ESMERELDA_REPO_ROOT")
+    if override:
+        return Path(override)
+    for candidate in (start, *start.parents):
+        if (candidate / "BUILD_LOG.md").is_file():
+            return candidate
+    return start
+
+
+_REPO_ROOT = _find_repo_root(Path(__file__).resolve().parent)
 _BUILD_LOG_PATH = _REPO_ROOT / "BUILD_LOG.md"
 _API_SOURCE_DIR = Path(__file__).resolve().parents[2]  # backend/api/
 
