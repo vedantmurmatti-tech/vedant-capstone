@@ -102,11 +102,108 @@ def _get_credentials() -> tuple[str, str, str]:
     return username, password, moodle_url
 
 
-def _log_diagnostics(page, stage: str) -> None:
-    """Safe, credential-free diagnostic logging of exactly where the login
-    flow stands. Never logs a form field's value, a cookie, a token, or
-    any other session data — only the URL, page title, and whether
-    specific, non-secret DOM elements are present."""
+# ============================================================
+# TEMPORARY PRODUCTION DIAGNOSTIC — added specifically to investigate a
+# Render-only login failure that persisted after the previous _login()
+# fix (which corrected a URL-only success check; see BUILD_LOG.md for
+# both entries). This section captures rich, sanitized, secret-free
+# snapshots of the real page state Render sees after submitting the
+# login form, and keeps the most recent capture in memory so it can be
+# pulled from a running Render instance via GET /api/sync/moodle/diagnostics
+# (api/routes.py) without needing shell/log access.
+#
+# This is diagnostic-only and deliberately does NOT change how _login()
+# decides success/failure — that logic is untouched in this change. It
+# only *records* facts; it draws no conclusions (per instruction: don't
+# assume a "login" URL means failure, and don't assume .usermenu means
+# success — this code reports both as raw, separate booleans and lets a
+# human read the real picture).
+#
+# Remove this section (and the temporary endpoint) once the Render/local
+# discrepancy this was added to investigate is understood and fixed.
+# ============================================================
+
+_EMAIL_PATTERN = re.compile(r"[\w.+-]+@[\w.-]+\.\w+")
+# Long opaque alphanumeric runs (20+ chars, mixing letters and digits) —
+# the shape of a session id, sesskey, or CSRF token if one were ever
+# rendered into visible page text. Errs toward over-redacting rather than
+# risking a real token slipping through; this is a diagnostic dump, not
+# user-facing text, so some false-positive redaction of ordinary long
+# strings is an acceptable trade.
+_OPAQUE_TOKEN_PATTERN = re.compile(r"\b(?=[A-Za-z0-9_-]*\d)(?=[A-Za-z0-9_-]*[A-Za-z])[A-Za-z0-9_-]{20,}\b")
+
+_last_login_diagnostics: list[dict] = []
+
+
+def get_last_login_diagnostics() -> list[dict]:
+    """Temporary diagnostic accessor (see the block comment above) — the
+    full list of stage-by-stage snapshots captured during the most recent
+    _login() attempt in this process, oldest first. Empty if no sync has
+    attempted a login yet since this process started. Every field here
+    has already been sanitized; this is safe to serialize directly into
+    an API response or a log line."""
+    return list(_last_login_diagnostics)
+
+
+def _sanitize_text(text: str, *, username: str, password: str) -> str:
+    sanitized = text
+    if username:
+        sanitized = sanitized.replace(username, "[REDACTED_USERNAME]")
+    if password:
+        sanitized = sanitized.replace(password, "[REDACTED_PASSWORD]")
+    sanitized = _EMAIL_PATTERN.sub("[REDACTED_EMAIL]", sanitized)
+    sanitized = _OPAQUE_TOKEN_PATTERN.sub("[REDACTED_TOKEN]", sanitized)
+    return sanitized
+
+
+def _list_forms_and_inputs(page) -> list[dict]:
+    """Names/types of visible forms and their inputs — explicitly never
+    reads an input's `value` attribute, so no submitted or pre-filled
+    credential value can end up here even by accident."""
+    forms_info: list[dict] = []
+    try:
+        forms = page.locator("form")
+        for i in range(forms.count()):
+            form = forms.nth(i)
+            try:
+                fields = []
+                controls = form.locator("input, button, select, textarea")
+                for j in range(controls.count()):
+                    el = controls.nth(j)
+                    try:
+                        fields.append({
+                            "tag": el.evaluate("el => el.tagName.toLowerCase()"),
+                            "type": el.get_attribute("type"),
+                            "name": el.get_attribute("name"),
+                            "id": el.get_attribute("id"),
+                        })
+                    except Exception:
+                        continue
+                forms_info.append({
+                    "action": form.get_attribute("action"),
+                    "method": form.get_attribute("method"),
+                    "id": form.get_attribute("id"),
+                    "fields": fields,
+                })
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return forms_info
+
+
+def _capture_login_diagnostics(
+    page,
+    stage: str,
+    *,
+    username: str,
+    password: str,
+    response_status: int | None = None,
+) -> dict:
+    """Records one sanitized, secret-free snapshot of the real page
+    state. Reports raw facts only — deliberately makes no success/failure
+    judgment (that stays entirely in _login(); this function is never
+    called anywhere else)."""
     try:
         url = page.url
     except Exception:
@@ -120,19 +217,50 @@ def _log_diagnostics(page, stage: str) -> None:
     except Exception:
         login_form_present = None
     try:
-        logged_in_marker_present = page.locator(_LOGGED_IN_MARKER_SELECTOR).count() > 0
+        usermenu_present = page.locator(".usermenu").count() > 0
     except Exception:
-        logged_in_marker_present = None
+        usermenu_present = None
+    try:
+        logout_link_present = page.locator("a[href*='/login/logout.php']").count() > 0
+    except Exception:
+        logout_link_present = None
     try:
         error_el = page.locator(_LOGIN_ERROR_SELECTOR).first
-        error_message = error_el.inner_text().strip()[:200] if error_el.count() > 0 else None
+        error_message = error_el.inner_text().strip()[:500] if error_el.count() > 0 else None
+        if error_message:
+            error_message = _sanitize_text(error_message, username=username, password=password)
     except Exception:
         error_message = None
+    try:
+        raw_text = page.locator("body").inner_text()
+        visible_text = _sanitize_text(raw_text, username=username, password=password)[:4000]
+    except Exception:
+        visible_text = "<unavailable>"
+    forms = _list_forms_and_inputs(page)
+
+    snapshot = {
+        "stage": stage,
+        "url": url,
+        "title": title,
+        "login_form_present": login_form_present,
+        "usermenu_present": usermenu_present,
+        "logout_link_present": logout_link_present,
+        "login_error_message": error_message,
+        "response_status": response_status,
+        "forms": forms,
+        "visible_text_sanitized": visible_text,
+    }
+    _last_login_diagnostics.append(snapshot)
 
     logger.info(
-        "[moodle-login] stage=%s url=%s title=%r login_form_present=%s logged_in_marker_present=%s error_message=%r",
-        stage, url, title, login_form_present, logged_in_marker_present, error_message,
+        "[moodle-login-diagnostic] stage=%s url=%s title=%r response_status=%s "
+        "login_form_present=%s usermenu_present=%s logout_link_present=%s "
+        "login_error_message=%r forms=%s",
+        stage, url, title, response_status,
+        login_form_present, usermenu_present, logout_link_present,
+        error_message, forms,
     )
+    return snapshot
 
 
 def _is_logged_in(page) -> bool:
@@ -170,12 +298,14 @@ def _login(page, moodle_url: str, username: str, password: str) -> None:
     identical across visits either. Judging success by a concrete,
     logged-in-only marker element (see _LOGGED_IN_MARKER_SELECTOR) instead
     is what actually distinguishes "authenticated" from "not"."""
+    _last_login_diagnostics.clear()
+
     try:
         page.goto(moodle_url, wait_until="domcontentloaded", timeout=30000)
     except Exception as exc:
         raise MoodleSyncError(f"Could not reach Moodle at the configured URL: {exc}") from exc
 
-    _log_diagnostics(page, "before_login")
+    _capture_login_diagnostics(page, "before_submit", username=username, password=password)
 
     if not _has_login_form(page):
         if _is_logged_in(page):
@@ -192,23 +322,48 @@ def _login(page, moodle_url: str, username: str, password: str) -> None:
     try:
         page.fill("#username", username)
         page.fill("#password", password)
-        page.click("#loginbtn")
     except PlaywrightTimeoutError as exc:
         raise MoodleLoginError(f"Moodle's login form was not found or not fillable: {exc}") from exc
+
+    submit_response_status: int | None = None
+    try:
+        # expect_navigation captures the real HTTP status of whatever page
+        # loads as a result of the click, when Moodle does a full-page
+        # navigation on login (the normal case) — None if it times out
+        # (e.g. an AJAX-based login with no full navigation), which is
+        # recorded as-is rather than guessed at.
+        with page.expect_navigation(wait_until="domcontentloaded", timeout=20000) as nav_info:
+            page.click("#loginbtn")
+        response = nav_info.value
+        submit_response_status = response.status if response else None
+    except PlaywrightTimeoutError:
+        try:
+            page.click("#loginbtn")
+        except Exception as exc:
+            raise MoodleLoginError(f"Failed to submit Moodle's login form: {exc}") from exc
     except Exception as exc:
         raise MoodleLoginError(f"Failed to submit Moodle's login form: {exc}") from exc
 
-    _log_diagnostics(page, "immediately_after_submit")
+    _capture_login_diagnostics(
+        page, "immediately_after_submit", username=username, password=password,
+        response_status=submit_response_status,
+    )
 
     # Give Moodle's redirect chain time to settle rather than racing it —
     # wait for the network to go quiet, but don't treat a timeout here as
     # fatal by itself; the DOM checks below are still the real verdict.
     try:
-        page.wait_for_load_state("networkidle", timeout=15000)
+        page.wait_for_load_state("networkidle", timeout=8000)
     except PlaywrightTimeoutError:
         pass
+    # Explicit fixed wait on top of the above, regardless of whether
+    # networkidle already resolved — specifically requested so the
+    # captured "after waiting" snapshot reflects a real 5-10s window, not
+    # whatever networkidle happened to settle on (which can be near-
+    # instant and might miss a slow server-side redirect/session write).
+    page.wait_for_timeout(7000)
 
-    _log_diagnostics(page, "after_waiting_for_redirect")
+    _capture_login_diagnostics(page, "after_5_10s_wait", username=username, password=password)
 
     if _is_logged_in(page) and not _has_login_form(page):
         return

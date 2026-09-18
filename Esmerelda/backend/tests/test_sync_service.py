@@ -34,6 +34,7 @@ from moodle.sync_service import (
     _extract_due_date,
     _get_credentials,
     _login,
+    get_last_login_diagnostics,
 )
 
 passed = 0
@@ -212,6 +213,35 @@ try:
     except Exception as exc:
         sync_1_error = exc
     check(f"5. First sync: real _login() succeeds against the fake Moodle server (error: {sync_1_error})", sync_1_ok)
+
+    # 5a-diag. The temporary production-diagnostic capture (added to investigate
+    # a Render-only login failure) actually recorded real, sanitized snapshots.
+    diagnostics_after_run_1 = get_last_login_diagnostics()
+    check(
+        "5a-diag. Diagnostics captured exactly the 3 required stages, in order",
+        [d["stage"] for d in diagnostics_after_run_1] == ["before_submit", "immediately_after_submit", "after_5_10s_wait"],
+    )
+    all_text = " ".join(
+        str(d.get(k, "")) for d in diagnostics_after_run_1 for k in ("visible_text_sanitized", "login_error_message", "url", "title")
+    )
+    check(
+        "5a-diag2. Neither the real username nor password appears anywhere in the captured diagnostics",
+        _TEST_USERNAME not in all_text and _TEST_PASSWORD not in all_text,
+    )
+    all_fields = [
+        field
+        for d in diagnostics_after_run_1
+        for form in d.get("forms") or []
+        for field in form.get("fields") or []
+    ]
+    check(
+        "5a-diag3. Forms/inputs were listed (at least one captured) without any input value ever being recorded",
+        len(all_fields) > 0 and all("value" not in field for field in all_fields),
+    )
+    check(
+        "5a-diag4. A response status was captured for the post-submit stage",
+        diagnostics_after_run_1[1]["response_status"] is not None,
+    )
 
     sync_2_ok = False
     sync_2_error = None
