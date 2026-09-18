@@ -27,6 +27,7 @@ router = APIRouter(prefix="/api")
 
 
 def _run_moodle_sync(run_id: int) -> None:
+    logger.info("[SYNC DEBUG] Moodle sync task entered (run_id=%s)", run_id)
     # Imported lazily so a machine that never triggers a sync (e.g. this
     # process running with Playwright uninstalled, per the Dockerfile's
     # deliberate exclusion — see BUILD_LOG.md) never pays the import cost
@@ -34,7 +35,7 @@ def _run_moodle_sync(run_id: int) -> None:
     from moodle.sync_service import MoodleCredentialsError, MoodleLoginError, MoodleSyncError, run_sync
 
     try:
-        result = run_sync()
+        result = run_sync(run_id=run_id)
         finish_sync_run(
             run_id,
             status="success",
@@ -127,25 +128,40 @@ def get_moodle_login_diagnostics():
     instance without needing shell/log access, after a login failure
     persisted there despite working locally. See BUILD_LOG.md.
 
-    Returns whatever moodle/sync_service.py's last _login() attempt in
-    this process captured — three stage-by-stage snapshots (URL, title,
-    form presence, .usermenu/logout-link presence, any Moodle login-error
-    text, a sanitized dump of visible page text, and the forms/inputs
-    present, values never included). Every field was already sanitized at
-    capture time (moodle/sync_service.py's _sanitize_text()) — the
-    username, password, and any email-shaped or opaque-token-shaped text
-    are redacted before this data is ever held in memory, so this
+    Reads from the database (storage.crud.get_latest_login_diagnostics),
+    not an in-process variable — an earlier version read only an
+    in-process list, which was found not to be reliably visible from a
+    separate API request on Render (a background task and a later GET
+    request are not guaranteed to land on the same process/instance).
+    The database is shared by every process, so this works regardless of
+    how many container instances or worker processes are actually
+    running.
+
+    Response shape: `hasCapture` (whether any sync has ever captured a
+    diagnostic snapshot in this database), `syncRunId` (which SyncRun it
+    belongs to), `capturedAt` (when the most recent snapshot for that run
+    was captured), `buildMarker` (moodle/sync_service.py's
+    DIAGNOSTIC_BUILD_MARKER — compare this against what the startup log
+    printed to confirm the running container is actually this build), and
+    `diagnostics` (the stage-by-stage snapshot list itself — URL, title,
+    form/usermenu/logout-link presence, any Moodle login-error text, a
+    sanitized dump of visible page text, and the forms/inputs present,
+    values never included). Every field was already sanitized at capture
+    time (moodle/sync_service.py's _sanitize_text()) — the username,
+    password, and any email-shaped or opaque-token-shaped text are
+    redacted before this is ever written to the database, so this
     endpoint has nothing further to strip.
 
-    Empty list if no sync has attempted a login yet in this process
-    (e.g. right after a fresh deploy, before the first trigger).
-
     Remove this endpoint (and moodle/sync_service.py's matching capture
-    code) once the investigation it was added for is complete.
+    code and the SyncRun.login_diagnostics* columns) once the
+    investigation it was added for is complete.
     """
-    from moodle.sync_service import get_last_login_diagnostics
+    from moodle.sync_service import DIAGNOSTIC_BUILD_MARKER
+    from storage.crud import get_latest_login_diagnostics
 
-    return {"diagnostics": get_last_login_diagnostics()}
+    result = get_latest_login_diagnostics()
+    result["buildMarker"] = DIAGNOSTIC_BUILD_MARKER
+    return result
 
 
 @router.get("/dashboard/summary", response_model=DashboardSummaryOut)

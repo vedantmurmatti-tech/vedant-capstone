@@ -85,3 +85,10 @@ class SyncRun(Base):
     assignments_synced: Mapped[int] = mapped_column(default=0)
     resources_synced: Mapped[int] = mapped_column(default=0)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # TEMPORARY diagnostic fields (see BUILD_LOG.md) — a JSON-serialized list of
+    # moodle/sync_service.py's sanitized login-diagnostic snapshots, and when the
+    # most recent one was captured. Database-backed (not an in-process variable)
+    # specifically because in-memory state was found not to be reliably visible
+    # from a separate API request on Render — see BUILD_LOG.md's diagnosis.
+    login_diagnostics: Mapped[str | None] = mapped_column(Text, nullable=True)
+    login_diagnostics_captured_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
