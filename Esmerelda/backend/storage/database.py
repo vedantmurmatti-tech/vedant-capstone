@@ -31,11 +31,24 @@ def _migrate_add_missing_columns() -> None:
     database (which create_all() will have created with the column
     already present) is a safe no-op."""
     with engine.connect() as conn:
-        existing_columns = {
+        assignments_columns = {
             row[1] for row in conn.execute(text("PRAGMA table_info(assignments)"))
         }
-        if existing_columns and "submission_status" not in existing_columns:
+        if assignments_columns and "submission_status" not in assignments_columns:
             conn.execute(text("ALTER TABLE assignments ADD COLUMN submission_status VARCHAR(255)"))
+            conn.commit()
+
+        # sync_runs.login_diagnostics/login_diagnostics_captured_at (temporary
+        # diagnostic fields — see BUILD_LOG.md) added after sync_runs already
+        # existed on some databases, so they need the same treatment.
+        sync_runs_columns = {
+            row[1] for row in conn.execute(text("PRAGMA table_info(sync_runs)"))
+        }
+        if sync_runs_columns and "login_diagnostics" not in sync_runs_columns:
+            conn.execute(text("ALTER TABLE sync_runs ADD COLUMN login_diagnostics TEXT"))
+            conn.commit()
+        if sync_runs_columns and "login_diagnostics_captured_at" not in sync_runs_columns:
+            conn.execute(text("ALTER TABLE sync_runs ADD COLUMN login_diagnostics_captured_at DATETIME"))
             conn.commit()
 
 

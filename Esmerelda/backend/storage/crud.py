@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from .models import Course, Assignment
 from sqlalchemy import select
@@ -241,3 +242,50 @@ def get_latest_sync_run() -> SyncRun | None:
         if run is not None:
             session.expunge(run)
         return run
+
+
+# TEMPORARY diagnostic functions (see BUILD_LOG.md) — database-backed
+# specifically because an earlier, in-process-only implementation was
+# found not to be reliably visible from a separate API request on
+# Render (multiple container instances / process restarts don't share
+# Python memory, but they do share this one SQLite database).
+
+def record_login_diagnostic(run_id: int, snapshot: dict) -> None:
+    """Appends one sanitized diagnostic snapshot (moodle/sync_service.py's
+    _capture_login_diagnostics()) to the given SyncRun's running list,
+    persisting immediately — not batched until the sync finishes — so a
+    GET /api/sync/moodle/diagnostics request can see a snapshot the
+    moment it's captured, even mid-sync, even from a different process
+    than the one running the sync."""
+    with SessionLocal() as session:
+        run = session.get(SyncRun, run_id)
+        if run is None:
+            return
+        existing: list = json.loads(run.login_diagnostics) if run.login_diagnostics else []
+        existing.append(snapshot)
+        run.login_diagnostics = json.dumps(existing)
+        run.login_diagnostics_captured_at = datetime.utcnow()
+        session.commit()
+
+
+def get_latest_login_diagnostics() -> dict:
+    """The most recent SyncRun that has captured at least one diagnostic
+    snapshot (not necessarily the very latest SyncRun overall — a sync
+    that failed before reaching _login() at all, e.g. missing
+    credentials, has no snapshots, and shouldn't hide an earlier run's
+    real captures). Returns a dict with hasCapture=False and no run id
+    if no SyncRun has ever captured anything in this database."""
+    with SessionLocal() as session:
+        run = session.scalar(
+            select(SyncRun)
+            .where(SyncRun.login_diagnostics.is_not(None))
+            .order_by(SyncRun.id.desc())
+        )
+        if run is None:
+            return {"hasCapture": False, "syncRunId": None, "capturedAt": None, "diagnostics": []}
+        return {
+            "hasCapture": True,
+            "syncRunId": run.id,
+            "capturedAt": run.login_diagnostics_captured_at,
+            "diagnostics": json.loads(run.login_diagnostics) if run.login_diagnostics else [],
+        }

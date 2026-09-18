@@ -47,11 +47,18 @@ from datetime import datetime
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
-from storage.crud import save_assignment, save_course, save_resource
+from storage.crud import record_login_diagnostic, save_assignment, save_course, save_resource
 
 MOODLE_URL_DEFAULT = "https://lms.flame.edu.in"
 
 logger = logging.getLogger("esmerelda.moodle_sync")
+
+# Bumped whenever this file's diagnostic instrumentation changes — logged
+# at app startup (main.py) and returned by GET /api/sync/moodle/diagnostics
+# so it's possible to confirm, from Render's own logs/API response, that
+# the deployed container is actually running this exact version of this
+# file and not a stale image layer. See BUILD_LOG.md.
+DIAGNOSTIC_BUILD_MARKER = "moodle-diagnostic-build-2026-09-18-v2"
 
 # DOM signals used to judge login state — deliberately NOT the page URL.
 # A prior version decided success purely by whether "login" was still a
@@ -199,11 +206,24 @@ def _capture_login_diagnostics(
     username: str,
     password: str,
     response_status: int | None = None,
+    run_id: int | None = None,
 ) -> dict:
     """Records one sanitized, secret-free snapshot of the real page
     state. Reports raw facts only — deliberately makes no success/failure
     judgment (that stays entirely in _login(); this function is never
-    called anywhere else)."""
+    called anywhere else).
+
+    Persists to the database (storage.crud.record_login_diagnostic)
+    whenever run_id is given, in addition to keeping the in-process
+    _last_login_diagnostics list — the database write is what makes this
+    visible to a GET /api/sync/moodle/diagnostics request that lands on
+    a *different* process/instance than the one that ran this sync (see
+    BUILD_LOG.md's diagnosis of why the in-memory-only version wasn't
+    reliably visible on Render). run_id is None only for direct,
+    in-process callers of _login() that don't have a SyncRun at all yet
+    (e.g. tests/test_sync_service.py's regression test) — those still
+    get the in-memory fallback."""
+    logger.info("[SYNC DEBUG] capturing diagnostic snapshot: stage=%s run_id=%s", stage, run_id)
     try:
         url = page.url
     except Exception:
@@ -251,12 +271,17 @@ def _capture_login_diagnostics(
         "visible_text_sanitized": visible_text,
     }
     _last_login_diagnostics.append(snapshot)
+    if run_id is not None:
+        try:
+            record_login_diagnostic(run_id, snapshot)
+        except Exception:
+            logger.exception("[SYNC DEBUG] failed to persist diagnostic snapshot to the database for run_id=%s", run_id)
 
     logger.info(
-        "[moodle-login-diagnostic] stage=%s url=%s title=%r response_status=%s "
+        "[moodle-login-diagnostic] build=%s stage=%s url=%s title=%r response_status=%s "
         "login_form_present=%s usermenu_present=%s logout_link_present=%s "
         "login_error_message=%r forms=%s",
-        stage, url, title, response_status,
+        DIAGNOSTIC_BUILD_MARKER, stage, url, title, response_status,
         login_form_present, usermenu_present, logout_link_present,
         error_message, forms,
     )
@@ -287,7 +312,7 @@ def _login_error_text(page) -> str | None:
         return None
 
 
-def _login(page, moodle_url: str, username: str, password: str) -> None:
+def _login(page, moodle_url: str, username: str, password: str, run_id: int | None = None) -> None:
     """Logs in and confirms success using real, logged-in-only DOM
     elements — not the page URL. A previous version treated "the URL no
     longer contains the substring 'login'" as proof of success, which is
@@ -297,7 +322,11 @@ def _login(page, moodle_url: str, username: str, password: str) -> None:
     redirect chain), and the login page's own URL isn't guaranteed
     identical across visits either. Judging success by a concrete,
     logged-in-only marker element (see _LOGGED_IN_MARKER_SELECTOR) instead
-    is what actually distinguishes "authenticated" from "not"."""
+    is what actually distinguishes "authenticated" from "not".
+
+    run_id, when given, is the SyncRun row this attempt belongs to — it's
+    threaded through to every diagnostic capture so those snapshots are
+    persisted to the database, not just held in this process's memory."""
     _last_login_diagnostics.clear()
 
     try:
@@ -305,7 +334,7 @@ def _login(page, moodle_url: str, username: str, password: str) -> None:
     except Exception as exc:
         raise MoodleSyncError(f"Could not reach Moodle at the configured URL: {exc}") from exc
 
-    _capture_login_diagnostics(page, "before_submit", username=username, password=password)
+    _capture_login_diagnostics(page, "before_submit", username=username, password=password, run_id=run_id)
 
     if not _has_login_form(page):
         if _is_logged_in(page):
@@ -346,7 +375,7 @@ def _login(page, moodle_url: str, username: str, password: str) -> None:
 
     _capture_login_diagnostics(
         page, "immediately_after_submit", username=username, password=password,
-        response_status=submit_response_status,
+        response_status=submit_response_status, run_id=run_id,
     )
 
     # Give Moodle's redirect chain time to settle rather than racing it —
@@ -363,7 +392,7 @@ def _login(page, moodle_url: str, username: str, password: str) -> None:
     # instant and might miss a slow server-side redirect/session write).
     page.wait_for_timeout(7000)
 
-    _capture_login_diagnostics(page, "after_5_10s_wait", username=username, password=password)
+    _capture_login_diagnostics(page, "after_5_10s_wait", username=username, password=password, run_id=run_id)
 
     if _is_logged_in(page) and not _has_login_form(page):
         return
@@ -614,12 +643,17 @@ def _sync_course_assignments(page, active_courses: list[dict]) -> int:
     return synced
 
 
-def run_sync() -> SyncResult:
+def run_sync(run_id: int | None = None) -> SyncResult:
     """The real sync. Raises MoodleCredentialsError/MoodleLoginError/
     MoodleSyncError on failure — never a raw Playwright/network
     exception — so the caller (api/routes.py) can record a clean error
     message on the SyncRun row without leaking a stack trace containing
-    request/response internals that might include session cookies."""
+    request/response internals that might include session cookies.
+
+    run_id (the SyncRun row this call belongs to) is threaded through to
+    _login() so its diagnostic captures persist to the database against
+    that row — see BUILD_LOG.md for why this needed to be database-backed
+    rather than only an in-process variable."""
     username, password, moodle_url = _get_credentials()
 
     result = SyncResult()
@@ -638,7 +672,9 @@ def run_sync() -> SyncResult:
                 # a real local login page and asserts both succeed identically.
                 context = browser.new_context()
                 page = context.new_page()
-                _login(page, moodle_url, username, password)
+                logger.info("[SYNC DEBUG] entering _login")
+                _login(page, moodle_url, username, password, run_id=run_id)
+                logger.info("[SYNC DEBUG] _login returned")
 
                 active_courses = _detect_active_courses(page)
                 for course in active_courses:
@@ -656,7 +692,8 @@ def run_sync() -> SyncResult:
                 if context is not None:
                     context.close()
                 browser.close()
-    except (MoodleCredentialsError, MoodleLoginError, MoodleSyncError):
+    except (MoodleCredentialsError, MoodleLoginError, MoodleSyncError) as exc:
+        logger.info("[SYNC DEBUG] _login raised: %s: %s", type(exc).__name__, exc)
         raise
     except Exception as exc:
         # Anything else (Playwright/browser not installed, an unexpected
