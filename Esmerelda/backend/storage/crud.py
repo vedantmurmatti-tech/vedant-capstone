@@ -5,6 +5,7 @@ from .models import Resource
 from .database import SessionLocal
 from .models import Course
 from .models import Document, DocumentVersion
+from .models import SyncRun
 
 def save_course(
     moodle_id: str,
@@ -43,7 +44,8 @@ def save_assignment(
     course_name: str | None,
     name: str,
     submission_url: str | None = None,
-    due_date: datetime | None = None
+    due_date: datetime | None = None,
+    submission_status: str | None = None
 ):
     with SessionLocal() as session:
         course = None
@@ -69,7 +71,8 @@ def save_assignment(
                 course_id=course.id,
                 name=name,
                 submission_url=submission_url,
-                due_date=due_date
+                due_date=due_date,
+                submission_status=submission_status
             )
             session.add(assignment)
 
@@ -78,6 +81,8 @@ def save_assignment(
             assignment.course_id = course.id
             assignment.submission_url = submission_url
             assignment.due_date = due_date
+            if submission_status is not None:
+                assignment.submission_status = submission_status
 
         session.commit()
         session.refresh(assignment)
@@ -181,3 +186,58 @@ def save_document(
         session.refresh(document)
 
         return document
+
+
+def get_running_sync_run() -> SyncRun | None:
+    """Used to reject a new sync trigger while one is already in progress
+    (see api/routes.py's POST /api/sync/moodle) — prevents two concurrent
+    Playwright sessions from racing over the same Moodle login/profile."""
+    with SessionLocal() as session:
+        run = session.scalar(
+            select(SyncRun).where(SyncRun.status == "running").order_by(SyncRun.id.desc())
+        )
+        if run is not None:
+            session.expunge(run)
+        return run
+
+
+def create_sync_run() -> SyncRun:
+    with SessionLocal() as session:
+        run = SyncRun(status="running")
+        session.add(run)
+        session.commit()
+        session.refresh(run)
+        session.expunge(run)
+        return run
+
+
+def finish_sync_run(
+    run_id: int,
+    *,
+    status: str,
+    courses_synced: int = 0,
+    assignments_synced: int = 0,
+    resources_synced: int = 0,
+    error_message: str | None = None
+) -> None:
+    with SessionLocal() as session:
+        run = session.get(SyncRun, run_id)
+        if run is None:
+            return
+        run.status = status
+        run.finished_at = datetime.utcnow()
+        run.courses_synced = courses_synced
+        run.assignments_synced = assignments_synced
+        run.resources_synced = resources_synced
+        run.error_message = error_message
+        session.commit()
+
+
+def get_latest_sync_run() -> SyncRun | None:
+    with SessionLocal() as session:
+        run = session.scalar(
+            select(SyncRun).order_by(SyncRun.id.desc())
+        )
+        if run is not None:
+            session.expunge(run)
+        return run

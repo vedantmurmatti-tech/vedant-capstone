@@ -4,8 +4,13 @@ __pycache__/
 .env
 tests/
 
-# Local-only Moodle/Playwright automation — not part of the deployed API.
-moodle/
+# Local-only, interactive Moodle/Playwright automation — not part of the
+# deployed API. moodle/sync_service.py (used by POST /api/sync/moodle) is
+# NOT excluded — the rest of moodle/ (the manual-login tools) is.
+moodle/browser.py
+moodle/document_downloader.py
+moodle/browser_profile/
+moodle/__pycache__/
 content_radar.py
 course_radar.py
 submission_radar.py

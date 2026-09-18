@@ -1,20 +1,27 @@
 # Esmerelda backend — production runtime dependencies.
 #
-# Scope: only what the deployed FastAPI app actually imports at runtime —
-# main.py (venv/main.py), api/, storage/, and the MCP bridge
-# (api/mcp_bridge.py -> mcp-server-sqlite). Deliberately excludes:
-#   - Playwright (moodle/ browser automation) — not imported by the
-#     deployed API's import chain (api.routes -> api.chat_agent never
-#     imports the moodle package).
-#   - pyttsx3 / other Windows-only voice packages — not imported by
-#     api/ or storage/ at all.
+# Scope: what the deployed FastAPI app actually imports at runtime —
+# main.py, api/, storage/, the MCP bridge (api/mcp_bridge.py ->
+# mcp-server-sqlite), and moodle/sync_service.py (POST /api/sync/moodle).
+# Deliberately excludes pyttsx3 / other Windows-only voice packages —
+# not imported by api/, storage/, or moodle/sync_service.py at all.
+#
+# Playwright *is* included below — an earlier version of this file
+# excluded it because nothing in the deployed API needed it yet. That
+# changed once moodle/sync_service.py (the unattended, credential-based
+# Moodle sync triggered by POST /api/sync/moodle) was added; see
+# BUILD_LOG.md for both that change and this one. Installing the
+# `playwright` package alone is not enough to run it in a container —
+# backend/Dockerfile also runs `playwright install --with-deps chromium`
+# to fetch the actual browser binary and its Linux system libraries.
+#
 # Versions below are pinned to what is verified working in local dev
 # (backend/venv), except where a package is a transitive dependency of
 # another pinned package here (e.g. starlette/anyio/httpx come in via
 # fastapi/groq/google-genai/mcp) — those are left unpinned so pip can
 # resolve versions compatible with the pins below.
 #
-# Target Python: 3.12 (Railway's default Python buildpack image; broad
+# Target Python: 3.12 (Render's default Python buildpack image; broad
 # prebuilt-wheel coverage for every package below). Local dev was on
 # 3.14, which is newer than what most of these packages publish wheels
 # for yet — 3.12 is the safer, tested target for deployment.
@@ -28,3 +35,4 @@ google-genai==2.24.0
 groq==1.7.0
 mcp==1.6.0
 mcp-server-sqlite==2025.4.25
+playwright==1.63.0

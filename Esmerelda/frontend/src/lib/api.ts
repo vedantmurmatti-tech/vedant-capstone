@@ -21,6 +21,7 @@ import type {
   DocumentFile,
   MoodleSyncStatus,
   Resource,
+  SyncTriggerResponse,
 } from "@/types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
@@ -90,6 +91,10 @@ export function getDocumentDownloadUrl(document: DocumentFile): string {
 
 export async function getMoodleSyncStatus(): Promise<MoodleSyncStatus> {
   return apiFetch<MoodleSyncStatus>("/sync-status");
+}
+
+export async function triggerMoodleSync(): Promise<SyncTriggerResponse> {
+  return apiFetch<SyncTriggerResponse>("/sync/moodle", { method: "POST" });
 }
 
 export async function getDashboardSummary(): Promise<DashboardSummary> {

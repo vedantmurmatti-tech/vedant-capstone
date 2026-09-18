@@ -26,6 +26,7 @@ class Assignment(Base):
     description: Mapped[str | None] = mapped_column(Text)
     due_date: Mapped[datetime | None] = mapped_column(DateTime)
     submission_url: Mapped[str | None] = mapped_column(String(500))
+    submission_status: Mapped[str | None] = mapped_column(String(255))
 
 class Resource(Base):
     __tablename__ = "resources"
@@ -68,3 +69,19 @@ class DocumentVersion(Base):
         DateTime,
         default=datetime.utcnow
     )
+
+
+class SyncRun(Base):
+    """One record per Moodle sync attempt (backend/moodle/sync_service.py).
+    Lets the API report real sync state — in progress, last success time,
+    last error — instead of guessing from unrelated timestamps."""
+    __tablename__ = "sync_runs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    status: Mapped[str] = mapped_column(String(20))  # "running" | "success" | "error"
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    courses_synced: Mapped[int] = mapped_column(default=0)
+    assignments_synced: Mapped[int] = mapped_column(default=0)
+    resources_synced: Mapped[int] = mapped_column(default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)

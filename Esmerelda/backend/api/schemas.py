@@ -66,6 +66,14 @@ class SyncStatusOut(BaseModel):
     state: str
     lastSyncedAt: datetime | None
     coursesTracked: int
+    lastError: str | None = None
+
+
+class SyncTriggerOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    runId: int
+    state: str
 
 
 class DashboardSummaryOut(BaseModel):
