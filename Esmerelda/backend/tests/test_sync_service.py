@@ -1071,6 +1071,14 @@ try:
     many_env["MOODLE_USERNAME"] = _TEST_USERNAME
     many_env["MOODLE_PASSWORD"] = _TEST_PASSWORD
     many_env["MOODLE_URL"] = many_url
+    # This test's purpose is proving memory doesn't accumulate across many
+    # sequentially-processed resources — unrelated to the temporary
+    # per-sync download limit (see moodle/document_downloader.py,
+    # BUILD_LOG.md), which defaults to only 3 and would otherwise make
+    # this test download (and correctly measure memory for) just 3 of the
+    # 15 real files instead of all of them. Explicitly unlimited here so
+    # this test still exercises its own, original, real concern.
+    many_env["ESMERELDA_MAX_DOCUMENT_DOWNLOADS_PER_SYNC"] = "0"
 
     many_proc = subprocess.run(
         [sys.executable, "-c", many_script], cwd=str(backend_dir), env=many_env,

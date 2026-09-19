@@ -1314,4 +1314,35 @@ Inspected the real local dev database directly (`storage/esmerelda.db`) before a
 
 ---
 
+## 2026-09-19 (Temporary safety limit: cap document downloads at 3 per sync)
+
+- **Time**: 2026-09-19, continuing the same day as the entries above. Deliberately the smallest possible change — one file (`moodle/document_downloader.py`) does the actual work; everything else touched is test/doc/env-example updates needed to keep the existing suite honest about the new behavior.
+
+### What changed
+
+`moodle/document_downloader.py`'s `sync_resource_documents()` — the automated document-download stage called from `moodle/sync_service.py`'s `run_sync()` — now caps how many eligible resources are actually downloaded/processed in one sync run, via a new `ESMERELDA_MAX_DOCUMENT_DOWNLOADS_PER_SYNC` environment variable (`_get_max_document_downloads_per_sync()`), defaulting to **3**, following the exact same "re-read every call, safe fallback on an invalid value" pattern already established for `ESMERELDA_STALE_SYNC_MINUTES` in `storage/crud.py`.
+
+- **Scope, exactly as instructed**: only this one function, only the document-*download* stage. `moodle/sync_service.py`'s course discovery, resource-*metadata* discovery/persistence, and assignment discovery (Timeline and course-page paths) were not touched at all — every real course/resource/assignment is still discovered and persisted, in full, on every sync; only the *number of resources actually downloaded* is bounded. Verified directly, not assumed: `tests/test_document_download_limit.py`'s check 2 confirms all 6 test resources are persisted as `Resource` rows even though only 3 are downloaded.
+- **`0` explicitly means unlimited** (every eligible resource attempted — the pre-existing behavior), never "download nothing." An invalid or negative value falls back to the default of 3 with a logged warning, the same defensive pattern already used elsewhere in this project for its other configurable env vars.
+- **Logging, exactly as instructed**: the resolved limit is logged at the start of every sync (`"document download limit=3"` or `"document download limit=unlimited"`); the resources actually selected for download are logged with their real resource ids; when the limit truncates the eligible list, a distinct log line names how many were skipped *specifically because the limit was reached* (`"document download limit reached: N eligible, M selected for this sync, K skipped (resource_ids=[...])"`) — a different, more specific message than an ordinary per-item failure or ineligibility skip, so a real download failure is never confused with an intentional, limit-driven skip in the logs.
+- **All existing safeguards are completely unchanged**: streaming download (`_stream_resource_to_disk()`), the per-download timeout/total-deadline/max-file-size limits, and the extraction size/page-count bounds (`storage/text_extraction.py`) were not touched — every resource that IS selected for download still goes through the exact same, already-hardened path as before. No resource content is ever loaded into memory to decide the limit — the limit is applied by slicing the existing lightweight ORM-row list (`resources[:limit]`), the same list `sync_resource_documents()` already built up front (a handful of short strings per row, not file content — unchanged from before).
+- **`DocumentSyncCounts.skipped`** — a pre-existing field that was always 0 in practice before this change (nothing set it) — is now used to report the count of resources skipped due to this limit, requiring no new field and no change to any code that reads `DocumentSyncCounts`.
+- **No database schema change.**
+
+### Testing
+
+- `tests/test_document_download_limit.py` (**new**, 13 checks, against a real headless-Chromium-driven `run_sync()` over a real local fake Moodle server with 6 eligible resources — deliberately more than the default limit): the default limit downloads exactly 3 of 6 eligible resources while all 6 are still discovered/persisted as `Resource` rows; the limit value, the selected resources, and the limit-driven skip are all logged in the exact form described above; the limit is genuinely configurable (set to 2, confirmed exactly 2 downloaded); `0` is confirmed to mean unlimited (all 6 downloaded); an invalid env value is confirmed to fall back to the default of 3 without crashing the sync.
+- `tests/test_sync_service.py`: one existing test (`8b`, the "15 real files, memory doesn't accumulate" test) needed its own environment updated to explicitly set `ESMERELDA_MAX_DOCUMENT_DOWNLOADS_PER_SYNC=0` — its real purpose (proving memory stays bounded across many sequentially-processed resources) is orthogonal to this new limit, and without the override the new default-3 behavior would have silently changed what that test was actually exercising (down to 3 files instead of 15) rather than the test's assertions being wrong. This is the only pre-existing test that needed any change; every other test file already uses 4 or fewer eligible resources per run and was completely unaffected.
+- **Full suite result — every test file run, none skipped, none weakened**: `test_assignment_action_planner.py` 9/9, `test_assignment_course_mapping.py` 9/9, `test_assignment_description.py` 9/9, `test_course_page_assignment_discovery.py` 10/10, `test_course_query_matching.py` 15/15, `test_deployment_readiness.py` 9/9, `test_document_download_limit.py` 13/13 (new), `test_document_retrieval.py` 11/11, `test_document_skip_logic.py` 34/34, `test_followups.py` 9/9, `test_groq_agent.py` 10/10, `test_production_readiness.py` 12/12, `test_resource_dedup.py` 10/10, `test_sync_service.py` 56/56, `test_sync_staleness.py` 18/18, `test_text_extraction.py` 10/10 — **244/244 passed.**
+- `.env.example` updated to document the new variable, its default, and its `0`-means-unlimited behavior, matching the existing documentation style for `ESMERELDA_STALE_SYNC_MINUTES`.
+
+### Remaining notes
+
+- This is explicitly a **temporary** limit (per the request and the code's own comments) — intended to bound a single sync's download volume/time while the rest of the pipeline is exercised, not a permanent architectural constraint. Removing it later is a one-line revert of the default (or setting the env var to `0` in the deployment environment) — no other code depends on the limited count.
+- As with every other entry in this log, this was verified only against a local fake-Moodle-server test fixture — not a real Moodle account or a real Render deployment.
+
+**Files changed this step**: `backend/moodle/document_downloader.py`, `backend/.env.example`, `backend/tests/test_document_download_limit.py` (new), `backend/tests/test_sync_service.py` (one test's environment updated).
+
+---
+
 <!-- Add the next entry above this line, newest at the top or bottom — just be consistent -->
