@@ -332,6 +332,17 @@ _FULL_COURSE_PAGE_HTML = """
 <html><body>
 <div class="usermenu"><a href="/login/logout.php?sesskey=x">Log out</a></div>
 <a href="/mod/resource/view.php?id=999">Lecture Notes.pdf</a>
+<div class="collapse" id="topic-2" style="display:none;">
+  <a href="/mod/resource/view.php?id=888">Collapsed Section Handout.pdf</a>
+</div>
+<a href="/course/view.php?id=101&section=1">Week 2</a>
+</body></html>
+"""
+
+_FULL_COURSE_SECTION_PAGE_HTML = """
+<html><body>
+<div class="usermenu"><a href="/login/logout.php?sesskey=x">Log out</a></div>
+<a href="/mod/folder/view.php?id=777">Week 2 Readings</a>
 </body></html>
 """
 
@@ -363,6 +374,8 @@ class _FullFakeMoodleHandler(http.server.BaseHTTPRequestHandler):
             body = _LOGIN_PAGE_HTML
         elif self.path.startswith("/my/") or self.path == "/my":
             body = _FULL_MY_PAGE_HTML
+        elif self.path.startswith("/course/view.php") and "section=" in self.path:
+            body = _FULL_COURSE_SECTION_PAGE_HTML
         elif self.path.startswith("/course/view.php"):
             body = _FULL_COURSE_PAGE_HTML
         elif self.path.startswith("/mod/assign/view.php"):
@@ -429,7 +442,12 @@ try:
         parts = [int(p) for p in result_line.removeprefix("RESULT:").split(":")]
         courses_d, courses_p, resources_d, resources_p, assignments_d, assignments_p = parts
         check(f"6c. Course discovered AND persisted (discovered={courses_d}, persisted={courses_p})", courses_d == 1 and courses_p == 1)
-        check(f"6d. Resource discovered AND persisted (discovered={resources_d}, persisted={resources_p})", resources_d == 1 and resources_p == 1)
+        check(
+            f"6d. All 3 resources discovered AND persisted (discovered={resources_d}, persisted={resources_p}): "
+            "a normally-visible resource, one inside a CSS-collapsed section (display:none — the real bug this "
+            "step fixed), and one on a separate multi-page course-display section page",
+            resources_d == 3 and resources_p == 3,
+        )
         check(
             f"6e. Assignment discovered AND persisted (discovered={assignments_d}, persisted={assignments_p}) — "
             "this is the exact scenario the relative-dashboard-URL bug silently zeroed out",
@@ -470,15 +488,33 @@ try:
         "6g. The explicit 'Moodle sync summary' line has the exact requested field names",
         "courses_discovered=1" in combined_output
         and "assignments_discovered=1" in combined_output
-        and "resources_discovered=1" in combined_output
+        and "resources_discovered=3" in combined_output
         and "courses_persisted=1" in combined_output
         and "assignments_persisted=1" in combined_output
-        and "resources_persisted=1" in combined_output,
+        and "resources_persisted=3" in combined_output,
     )
     check(
         "6h. Neither the real username nor password appears anywhere in the subprocess's stdout/stderr",
         _TEST_USERNAME not in proc.stdout and _TEST_PASSWORD not in proc.stdout
         and _TEST_USERNAME not in proc.stderr and _TEST_PASSWORD not in proc.stderr,
+    )
+    check(
+        "6i. The collapsed-section resource (the actual reported bug) is discovered by name, not just by count",
+        "Collapsed Section Handout.pdf" in combined_output,
+    )
+    check(
+        "6j. The multi-page course-display section page is detected and visited",
+        "multi-page course display" in combined_output and "Week 2 Readings" in combined_output,
+    )
+    check(
+        "6k. All 5 resource file types this step was asked to handle are correctly classified "
+        "(PDF, Word Document, Page, Link, Folder — the fake server's own resources cover PDF and "
+        "Folder for real; the rest are covered directly by unit checks 2/2b/2c above)",
+        _classify_resource_type("https://x/file.docx") == "Word Document"
+        and _classify_resource_type("https://x/mod/page/view.php?id=1") == "Page"
+        and _classify_resource_type("https://x/mod/url/view.php?id=1") == "Link"
+        and _classify_resource_type("https://x/mod/folder/view.php?id=1") == "Folder"
+        and _classify_resource_type("https://x/file.pdf") == "PDF",
     )
 
     full_httpd.shutdown()
