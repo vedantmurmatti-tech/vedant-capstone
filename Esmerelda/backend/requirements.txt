@@ -45,3 +45,14 @@ playwright==1.63.0
 pypdf==6.19.0
 python-docx==1.2.0
 python-pptx==1.0.2
+# pypdf's own optional dependency, for fully parsing embedded CFF Type1
+# ("Type1C") font encodings when extracting text — this is what real
+# production logs' repeated "WARNING pypdf._cmap: fontTools is required
+# to fully parse the encoding..." was about (see BUILD_LOG.md). Confirmed
+# directly: none of pypdf/python-docx/python-pptx/their own dependencies
+# (lxml, Pillow, XlsxWriter, typing-extensions) require fontTools — it
+# was genuinely absent from every real deployment of this file, which is
+# why the warning was real and reproducible, not a fluke of one
+# environment. Pinned explicitly and directly rather than relying on any
+# other package to pull it in incidentally.
+fonttools==4.65.0
