@@ -44,12 +44,20 @@ import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from urllib.parse import urljoin
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 from storage.crud import record_login_diagnostic, save_assignment, save_course, save_resource
 
 MOODLE_URL_DEFAULT = "https://lms.flame.edu.in"
+
+
+def _safe_title(page) -> str:
+    try:
+        return page.title()
+    except Exception:
+        return "<unavailable>"
 
 logger = logging.getLogger("esmerelda.moodle_sync")
 
@@ -91,9 +99,23 @@ class MoodleSyncError(Exception):
 
 @dataclass
 class SyncResult:
+    # "_synced" fields are *persisted* counts — i.e. storage.crud's save_*()
+    # call was actually made AND returned a real row, not None. Kept under
+    # their original field names since api/routes.py's _run_moodle_sync()
+    # already reads these to populate SyncRun.
     courses_synced: int = 0
     assignments_synced: int = 0
     resources_synced: int = 0
+    # "_discovered" fields are what was actually found on the page before
+    # any persistence was attempted — can be >= the "_synced" counts (e.g.
+    # a course URL with no parseable Moodle id, or a resource whose course
+    # row couldn't be matched, is discovered but not persisted). Tracking
+    # both separately is what makes it possible to tell "Moodle returned
+    # nothing" apart from "Moodle returned something but persisting it
+    # failed" — deliberately not collapsed into one number.
+    courses_discovered: int = 0
+    assignments_discovered: int = 0
+    resources_discovered: int = 0
     course_names: list[str] = field(default_factory=list)
 
 
@@ -415,31 +437,56 @@ def _login(page, moodle_url: str, username: str, password: str, run_id: int | No
     )
 
 
-def _detect_active_courses(page) -> list[dict]:
+def _detect_active_courses(page, moodle_url: str) -> list[dict]:
     """Generic, term-independent detection: Moodle's own dashboard groups
     courses under a "Only courses in progress" heading, ending at the next
     "Course overview" heading. This reads that same boundary (as
     moodle/browser.py already does interactively) instead of matching
     course codes/terms with a hardcoded regex (course_radar.py's approach,
     which breaks every new semester) — this survives new terms and new
-    course-code prefixes without a code change."""
+    course-code prefixes without a code change.
+
+    moodle_url anchors urljoin() below: `link.get_attribute("href")`
+    returns the raw HTML attribute exactly as Moodle emitted it, which is
+    not guaranteed absolute — unlike a real click or an anchor's `.href`
+    DOM property (which browsers resolve automatically), Playwright's
+    `page.goto()` requires an absolute URL and raises
+    "Cannot navigate to invalid URL" on a bare relative path. Resolving
+    every href here means every course URL stored for later navigation
+    is guaranteed absolute regardless of how Moodle rendered the link."""
+    logger.info("[SYNC DEBUG] active-course discovery started (page url=%s)", page.url)
     links = page.locator('a[href*="/course/view.php"]')
+    link_count = links.count()
     all_courses: dict[str, str] = {}
-    for i in range(links.count()):
+    skipped_links = 0
+    for i in range(link_count):
         try:
             link = links.nth(i)
             text = link.inner_text().strip()
             href = link.get_attribute("href")
+            if href:
+                href = urljoin(moodle_url, href)
             if not text or not href or "/course/view.php" not in href:
                 continue
             if text not in all_courses:
                 all_courses[text] = href
-        except Exception:
+        except Exception as exc:
+            # Logged, not silently swallowed — one bad link (e.g. detached
+            # from the DOM mid-read) shouldn't kill discovery, but it also
+            # shouldn't vanish without a trace.
+            skipped_links += 1
+            logger.warning(
+                "[SYNC DEBUG] skipped one course link while reading the dashboard (link %d/%d): %s: %s",
+                i, link_count, type(exc).__name__, exc,
+            )
             continue
+    if skipped_links:
+        logger.warning("[SYNC DEBUG] active-course discovery: %d/%d course links were unreadable and skipped", skipped_links, link_count)
 
     try:
         body_text = page.locator("body").inner_text()
     except Exception as exc:
+        logger.error("[SYNC DEBUG] could not read the Moodle dashboard body text: %s: %s", type(exc).__name__, exc)
         raise MoodleSyncError(f"Could not read the Moodle dashboard page: {exc}") from exc
 
     lines = [line.strip() for line in body_text.splitlines() if line.strip()]
@@ -447,17 +494,35 @@ def _detect_active_courses(page) -> list[dict]:
         start = lines.index("Only courses in progress") + 1
     except ValueError:
         start = -1
+        logger.warning("[SYNC DEBUG] 'Only courses in progress' heading not found on the dashboard page — active-course list will be empty")
     try:
         end = lines.index("Course overview")
     except ValueError:
         end = len(lines)
+        if start != -1:
+            logger.warning("[SYNC DEBUG] 'Course overview' heading not found — reading to end of page instead")
 
     active_names = lines[start:end] if start != -1 else []
-    return [
+    active_courses = [
         {"name": name, "url": all_courses[name]}
         for name in active_names
         if name in all_courses
     ]
+    unmatched_names = [name for name in active_names if name not in all_courses]
+
+    logger.info(
+        "[SYNC DEBUG] active courses discovered: count=%d names=%s",
+        len(active_courses), [c["name"] for c in active_courses],
+    )
+    if unmatched_names:
+        # A name appeared in the "in progress" text section but had no
+        # matching /course/view.php link anywhere on the page — genuinely
+        # worth knowing about rather than silently dropping.
+        logger.warning(
+            "[SYNC DEBUG] %d course name(s) listed as 'in progress' had no matching course link and were dropped: %s",
+            len(unmatched_names), unmatched_names,
+        )
+    return active_courses
 
 
 def _course_moodle_id(url: str) -> str | None:
@@ -476,7 +541,14 @@ _RESOURCE_TYPE_BY_HREF = (
     ("/mod/url/", "Link"),
     ("/mod/folder/", "Folder"),
 )
-_IGNORED_HREF_FRAGMENTS = ("/user/", "/course/view.php", "/mod/forum/view.php", "/grade/", "/message/", "/calendar/")
+_IGNORED_HREF_FRAGMENTS = (
+    "/user/", "/course/view.php", "/mod/forum/view.php", "/grade/", "/message/", "/calendar/",
+    # Present on every logged-in page's .usermenu (see _LOGGED_IN_MARKER_SELECTOR) —
+    # without this, "Log out" was being discovered and persisted as a fake
+    # "Activity" resource on every single course, on every sync (caught via
+    # the full-pipeline regression test in tests/test_sync_service.py).
+    "/login/logout.php",
+)
 _IGNORED_LINK_TEXT = {"more", "edit", "hide", "show", "settings"}
 
 
@@ -488,17 +560,40 @@ def _classify_resource_type(href: str) -> str:
     return "Activity"
 
 
-def _sync_course_resources(page, course_url: str, course_name: str) -> int:
+def _sync_course_resources(page, course_url: str, course_name: str, moodle_url: str) -> tuple[int, int]:
+    """Returns (discovered, persisted) — discovered is every link that
+    passed the ignore-filters below (a real candidate resource);
+    persisted is only those where storage.crud.save_resource() actually
+    returned a saved row (it returns None, logging its own reason, when
+    the course row itself couldn't be found — see storage/crud.py).
+
+    moodle_url resolves each resource's raw href to an absolute URL
+    before it's stored (see _detect_active_courses()'s docstring for why
+    Moodle's own href attributes aren't guaranteed absolute) — a relative
+    URL saved into the database would be useless to anything that later
+    tries to actually open it."""
+    logger.info("[SYNC DEBUG] visiting course URL: %s (%s)", course_url, course_name)
     try:
         page.goto(course_url, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(1500)
     except Exception as exc:
+        logger.error("[SYNC DEBUG] failed to open course page for '%s': %s: %s", course_name, type(exc).__name__, exc)
         raise MoodleSyncError(f"Could not open course page for '{course_name}': {exc}") from exc
 
     links = page.locator("a[href]")
-    synced = 0
+    link_count = links.count()
+    # This implementation scans every link on the course page directly
+    # rather than grouping by <li class="section"> first (unlike
+    # content_radar.py's section-by-section walk) — there is no separate
+    # per-section count to report, so "sections/topics discovered" is
+    # logged here as the raw candidate-link count instead, which is the
+    # closest real signal this code actually has.
+    logger.info("[SYNC DEBUG] sections/topics discovered for '%s': %d candidate links on the page", course_name, link_count)
+
+    discovered = 0
+    persisted = 0
     seen_urls: set[str] = set()
-    for i in range(links.count()):
+    for i in range(link_count):
         try:
             link = links.nth(i)
             if not link.is_visible():
@@ -513,22 +608,34 @@ def _sync_course_resources(page, course_url: str, course_name: str) -> int:
                 continue
             if "/mod/assign/" in href:
                 continue  # assignments are synced separately, via the timeline (has due dates)
+            href = urljoin(moodle_url, href)
             if href in seen_urls:
                 continue
             seen_urls.add(href)
+            discovered += 1
 
             moodle_id = _course_moodle_id(href) or href
-            save_resource(
+            saved = save_resource(
                 moodle_id=moodle_id,
                 course_name=course_name,
                 name=name,
                 resource_type=_classify_resource_type(href),
                 url=href,
             )
-            synced += 1
-        except Exception:
+            if saved is not None:
+                persisted += 1
+                logger.info("[SYNC DEBUG] resource written to DB: course='%s' name=%r type=%s", course_name, name, _classify_resource_type(href))
+            else:
+                logger.warning("[SYNC DEBUG] resource discovered but NOT persisted (save_resource returned None): course='%s' name=%r", course_name, name)
+        except Exception as exc:
+            logger.warning(
+                "[SYNC DEBUG] skipped one resource link on '%s' (link %d/%d): %s: %s",
+                course_name, i, link_count, type(exc).__name__, exc,
+            )
             continue
-    return synced
+
+    logger.info("[SYNC DEBUG] resources discovered for '%s': discovered=%d persisted=%d", course_name, discovered, persisted)
+    return discovered, persisted
 
 
 def _extract_due_date(text: str, assignment_name: str) -> datetime | None:
@@ -567,30 +674,65 @@ def _fetch_submission_status(page, assignment_url: str) -> str | None:
         return None
 
 
-def _sync_course_assignments(page, active_courses: list[dict]) -> int:
+def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) -> tuple[int, int]:
     """Uses the dashboard Timeline block (aggregates every active
     course's upcoming/overdue assignments in one place) rather than
     visiting every course's activity list individually — matching
     submission_radar.py's approach, generalized to match against the
-    real active-course list instead of a hardcoded course-code regex."""
-    try:
-        page.goto("dashboard/", wait_until="domcontentloaded", timeout=30000)
-    except Exception:
-        pass
+    real active-course list instead of a hardcoded course-code regex.
 
+    Returns (discovered, persisted) — see _sync_course_resources()'s
+    docstring for what that distinction means and why it's tracked
+    separately.
+
+    moodle_url is the real site root (the same URL passed to _login()) —
+    a previous version navigated to the bare relative path "dashboard/",
+    which Playwright resolves against whatever page this function is
+    called from (the last course page visited by
+    _sync_course_resources()), not the site root — e.g. from
+    "https://.../course/view.php?id=123" that resolved to
+    "https://.../course/dashboard/", a real page that does not exist on
+    Moodle (whose actual dashboard is "/my/", confirmed directly from
+    this project's own production login diagnostics). That silently sent
+    every sync down this function's "no Timeline block found, return 0"
+    path with no assignments ever persisted, even when login succeeded
+    and active courses were found — this is fixed by resolving an
+    explicit, absolute URL from the real site root instead."""
+    dashboard_url = urljoin(moodle_url, "my/")
+    logger.info("[SYNC DEBUG] navigating to dashboard for assignment discovery: %s", dashboard_url)
+    try:
+        page.goto(dashboard_url, wait_until="domcontentloaded", timeout=30000)
+    except Exception as exc:
+        logger.error(
+            "[SYNC DEBUG] failed to navigate to the dashboard for assignment discovery (%s): %s: %s",
+            dashboard_url, type(exc).__name__, exc,
+        )
+        return 0, 0
+    logger.info("[SYNC DEBUG] dashboard/current page loaded: url=%s title=%r", page.url, _safe_title(page))
+
+    logger.info("[SYNC DEBUG] assignment discovery started (via dashboard Timeline block)")
     timeline = page.locator("section.block_timeline, .block_timeline").first
     if timeline.count() == 0:
-        return 0
+        logger.warning(
+            "[SYNC DEBUG] no Timeline block found on %s — 0 assignments discovered "
+            "(this does NOT mean zero courses; it means the Timeline block wasn't present/matched on this page)",
+            page.url,
+        )
+        return 0, 0
     try:
         timeline.wait_for(state="visible", timeout=10000)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("[SYNC DEBUG] Timeline block did not become visible within 10s: %s: %s", type(exc).__name__, exc)
     page.wait_for_timeout(1500)
 
     active_names = {c["name"] for c in active_courses}
-    synced = 0
+    discovered = 0
+    persisted = 0
+    per_course_discovered: dict[str, int] = {}
     links = timeline.locator("a")
-    for i in range(links.count()):
+    link_count = links.count()
+    logger.info("[SYNC DEBUG] Timeline block found: %d candidate 'is due' link(s) to inspect", link_count)
+    for i in range(link_count):
         try:
             link = links.nth(i)
             if not link.is_visible():
@@ -601,6 +743,7 @@ def _sync_course_assignments(page, active_courses: list[dict]) -> int:
             href = link.get_attribute("href")
             if not href:
                 continue
+            href = urljoin(moodle_url, href)
             assignment_name = re.sub(r"\s+is due\s*$", "", text, flags=re.I).strip()
 
             # Walk upward to find both the due date text and which active course this belongs to.
@@ -624,11 +767,18 @@ def _sync_course_assignments(page, active_courses: list[dict]) -> int:
                     break
 
             if course_name is None:
-                continue  # not one of our currently-active courses — skip, don't guess
+                logger.info(
+                    "[SYNC DEBUG] assignment '%s' matched no active course (not one of the %d discovered) — skipped, not guessed",
+                    assignment_name, len(active_names),
+                )
+                continue
+
+            discovered += 1
+            per_course_discovered[course_name] = per_course_discovered.get(course_name, 0) + 1
 
             moodle_id = _course_moodle_id(href) or href
             submission_status = _fetch_submission_status(page, href)
-            save_assignment(
+            saved = save_assignment(
                 moodle_id=moodle_id,
                 course_name=course_name,
                 name=assignment_name,
@@ -636,11 +786,23 @@ def _sync_course_assignments(page, active_courses: list[dict]) -> int:
                 due_date=due_date,
                 submission_status=submission_status,
             )
-            synced += 1
-        except Exception:
+            if saved is not None:
+                persisted += 1
+                logger.info("[SYNC DEBUG] assignment written to DB: course='%s' name=%r", course_name, assignment_name)
+            else:
+                logger.warning("[SYNC DEBUG] assignment discovered but NOT persisted (save_assignment returned None): course='%s' name=%r", course_name, assignment_name)
+        except Exception as exc:
+            logger.warning(
+                "[SYNC DEBUG] skipped one Timeline entry (link %d/%d): %s: %s",
+                i, link_count, type(exc).__name__, exc,
+            )
             continue
 
-    return synced
+    logger.info(
+        "[SYNC DEBUG] assignments discovered per course: %s (total discovered=%d persisted=%d)",
+        per_course_discovered, discovered, persisted,
+    )
+    return discovered, persisted
 
 
 def run_sync(run_id: int | None = None) -> SyncResult:
@@ -675,19 +837,52 @@ def run_sync(run_id: int | None = None) -> SyncResult:
                 logger.info("[SYNC DEBUG] entering _login")
                 _login(page, moodle_url, username, password, run_id=run_id)
                 logger.info("[SYNC DEBUG] _login returned")
+                logger.info("[SYNC DEBUG] dashboard/current page loaded: url=%s title=%r", page.url, _safe_title(page))
 
-                active_courses = _detect_active_courses(page)
+                active_courses = _detect_active_courses(page, moodle_url)
+                result.courses_discovered = len(active_courses)
+                # Deliberately no assumption that this is empty or non-empty —
+                # both branches below are logged explicitly either way.
+                if not active_courses:
+                    logger.warning(
+                        "[SYNC DEBUG] 0 active courses discovered — course traversal, resource "
+                        "sync, and assignment sync are all skipped as a direct consequence of "
+                        "this (not because they were assumed unnecessary)"
+                    )
+
+                logger.info("[SYNC DEBUG] course traversal started: %d course(s) to visit", len(active_courses))
+                logger.info("[SYNC DEBUG] database persistence started")
                 for course in active_courses:
                     moodle_id = _course_moodle_id(course["url"])
                     if not moodle_id:
+                        logger.warning(
+                            "[SYNC DEBUG] course '%s' discovered but has no parseable Moodle id in its URL (%s) — skipped, not persisted",
+                            course["name"], course["url"],
+                        )
                         continue
                     save_course(moodle_id=moodle_id, name=course["name"])
                     result.course_names.append(course["name"])
-                    result.resources_synced += _sync_course_resources(page, course["url"], course["name"])
+                    logger.info("[SYNC DEBUG] course written to DB: name=%r moodle_id=%s", course["name"], moodle_id)
+
+                    course_resources_discovered, course_resources_persisted = _sync_course_resources(
+                        page, course["url"], course["name"], moodle_url
+                    )
+                    result.resources_discovered += course_resources_discovered
+                    result.resources_synced += course_resources_persisted
                 result.courses_synced = len(result.course_names)
 
                 if active_courses:
-                    result.assignments_synced = _sync_course_assignments(page, active_courses)
+                    result.assignments_discovered, result.assignments_synced = _sync_course_assignments(
+                        page, active_courses, moodle_url
+                    )
+
+                logger.info("[SYNC DEBUG] database commit completed")
+                logger.info(
+                    "Moodle sync summary: courses_discovered=%d assignments_discovered=%d resources_discovered=%d "
+                    "courses_persisted=%d assignments_persisted=%d resources_persisted=%d",
+                    result.courses_discovered, result.assignments_discovered, result.resources_discovered,
+                    result.courses_synced, result.assignments_synced, result.resources_synced,
+                )
             finally:
                 if context is not None:
                     context.close()
@@ -697,8 +892,14 @@ def run_sync(run_id: int | None = None) -> SyncResult:
         raise
     except Exception as exc:
         # Anything else (Playwright/browser not installed, an unexpected
-        # page-structure change, a network drop mid-sync) — wrap it so the
-        # caller always sees one of this module's own exception types.
+        # page-structure change, a network drop mid-sync) — logged with
+        # its real type and a full traceback (safe: none of the functions
+        # between _login() returning and here ever receive the username/
+        # password, so there is nothing credential-shaped a traceback from
+        # this block could contain), then wrapped so the caller always
+        # sees one of this module's own exception types.
+        logger.exception("[SYNC DEBUG] sync failed after _login() with an unexpected exception: %s: %s", type(exc).__name__, exc)
         raise MoodleSyncError(f"Sync failed: {exc}") from exc
 
+    logger.info("[SYNC DEBUG] sync completed")
     return result
