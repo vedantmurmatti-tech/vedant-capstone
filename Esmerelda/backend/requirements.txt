@@ -36,3 +36,12 @@ groq==1.7.0
 mcp==1.6.0
 mcp-server-sqlite==2025.4.25
 playwright==1.63.0
+# Text extraction for the Knowledge Base's document indexing/retrieval
+# pipeline (storage/text_extraction.py) — PDF/DOCX/PPTX only, per that
+# module's own documented scope. Each processes exactly one already-
+# downloaded file at a time (same discipline as document downloading
+# itself, see BUILD_LOG.md's memory-regression entry) — not a source of
+# the same unbounded-buffering risk that entry fixed.
+pypdf==6.19.0
+python-docx==1.2.0
+python-pptx==1.0.2

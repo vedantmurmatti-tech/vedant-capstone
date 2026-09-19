@@ -31,6 +31,7 @@ JSON-schema tool definitions groq_tools.py builds from it.
 """
 
 import json
+import logging
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -42,6 +43,8 @@ from groq import AsyncGroq
 from sqlalchemy.orm import Session
 
 from .followups import generate_followups
+
+logger = logging.getLogger("esmerelda.chat")
 from .gemini_tools import ToolCollector, build_tools
 from .groq_tools import ToolDispatch, build_dispatch, mcp_tool_defs, python_tool_defs
 from .mcp_bridge import McpCallLog, sqlite_mcp_session
@@ -196,6 +199,18 @@ async def handle_chat_message_groq(db: Session, message: str) -> ChatResponseOut
     python_tools = build_tools(db, collector)
 
     async def create_completion(messages: list[dict[str, Any]], tool_defs: list[dict[str, Any]]):
+        # Any tool result (including search_document_content's real,
+        # retrieved document excerpts — see api/gemini_tools.py) already
+        # sitting in `messages` as a {"role": "tool", ...} entry from a
+        # prior iteration of this same loop IS the grounded context, by
+        # the time this call happens — logged here, at the actual request
+        # boundary, not estimated separately, so this number is always
+        # exactly what's really being sent.
+        context_chars = sum(len(m.get("content") or "") for m in messages)
+        logger.info(
+            "[CHAT] sending grounded context to Groq: messages=%d context_chars=%d",
+            len(messages), context_chars,
+        )
         try:
             return await client.chat.completions.create(
                 model=model, messages=messages, tools=tool_defs, tool_choice="auto"

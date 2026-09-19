@@ -20,15 +20,22 @@ can always tell which tier actually answered — never silently masking a
 real failure.
 """
 
+import logging
+
 from sqlalchemy.orm import Session
 
-from . import deterministic_agent
+from . import deterministic_agent, document_retrieval
 from .gemini_agent import GeminiUnavailableError, handle_chat_message_gemini
 from .groq_agent import GroqUnavailableError, handle_chat_message_groq
 from .schemas import ChatResponseOut
 
+logger = logging.getLogger("esmerelda.chat")
+
 
 async def handle_chat_message(db: Session, message: str) -> ChatResponseOut:
+    logger.info("[CHAT] query received: %r", message[:200])
+    logger.info("[CHAT] documents indexed=%d", document_retrieval.count_indexed_documents(db))
+
     try:
         return await handle_chat_message_groq(db, message)
     except GroqUnavailableError as exc:

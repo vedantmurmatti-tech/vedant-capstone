@@ -14,15 +14,18 @@ still return them to the frontend as structured chips — the same contract
 ever seeing Gemini's prose.
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import Callable
 
 from sqlalchemy.orm import Session
 
-from . import queries
+from . import document_retrieval, queries
 from .matching import match_assignment, match_course
 from .schemas import AssignmentOut, ChatSourceOut, CourseOut, DocumentOut
 from .skills.assignment_action_planner import plan_actions, plan_for_assignment
+
+logger = logging.getLogger("esmerelda.chat")
 
 MAX_RESULTS = 8
 
@@ -123,6 +126,39 @@ def build_tools(db: Session, collector: ToolCollector) -> list[Callable]:
             )
         return {"documents": results}
 
+    def search_document_content(query: str) -> dict:
+        """Search the ACTUAL text content of real, downloaded Moodle documents (PDFs, DOCX, PPTX) for a specific question or topic — e.g. "what does the Service Design project brief say about requirements" or "summarize the TRENDS Matrix document". Use this whenever the user asks what a document says, requires, or covers — get_course_documents only returns document names/metadata, never their content. Returns the actual matching excerpts, quoted from the real files, with which document/course each came from. Args: query: the question or topic to search for, in the user's own words."""
+        chunks = document_retrieval.search_documents(db, query)
+        retrieved_names = [c.document_name for c in chunks]
+        logger.info("[CHAT] retrieved documents=%s", retrieved_names)
+        logger.info("[CHAT] retrieved chunks=%d", len(chunks))
+
+        if not chunks:
+            indexed_count = document_retrieval.count_indexed_documents(db)
+            return {
+                "excerpts": [],
+                "note": (
+                    "No indexed document content matched that query."
+                    if indexed_count > 0
+                    else "No documents have been indexed with searchable text yet."
+                ),
+            }
+
+        collector.sources.append(ChatSourceOut(label="Document Content", courseName="Knowledge Base"))
+        context_chars = sum(len(c.chunk_text) for c in chunks)
+        logger.info("[CHAT] context chars=%d", context_chars)
+
+        return {
+            "excerpts": [
+                {
+                    "document": c.document_name,
+                    "course": c.course_name or "Unassigned",
+                    "text": c.chunk_text,
+                }
+                for c in chunks
+            ]
+        }
+
     def plan_assignment_action(assignment_query: str) -> dict:
         """Run the assignment-action-planner Skill on ONE specific real assignment named or described by the user (e.g. "the MVP assignment" or "Assessment 2"). Use this — not get_upcoming_assignments — when the user asks what to do about a single named assignment. Breaks the assignment into its explicit requirements and returns a status (completed/incomplete/unverified), a concrete next action, an expected deliverable, how to verify it, and real evidence for each one — plus the real submission link/Moodle IDs and anything Esmerelda couldn't determine. Args: assignment_query: the assignment name or a distinctive phrase from it, as the user mentioned it."""
         rows = queries.fetch_all_assignments(db)
@@ -177,4 +213,10 @@ def build_tools(db: Session, collector: ToolCollector) -> list[Callable]:
             },
         }
 
-    return [get_upcoming_assignments, get_course_info, get_course_documents, plan_assignment_action]
+    return [
+        get_upcoming_assignments,
+        get_course_info,
+        get_course_documents,
+        search_document_content,
+        plan_assignment_action,
+    ]

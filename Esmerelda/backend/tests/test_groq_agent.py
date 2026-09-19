@@ -62,7 +62,10 @@ async def test_schema_conversion() -> None:
     check(
         "1. Groq tool schema conversion — Python tools",
         names
-        == {"get_upcoming_assignments", "get_course_info", "get_course_documents", "plan_assignment_action"}
+        == {
+            "get_upcoming_assignments", "get_course_info", "get_course_documents",
+            "search_document_content", "plan_assignment_action",
+        }
         and all(d["type"] == "function" and "parameters" in d["function"] for d in defs),
         f"names={sorted(names)}",
     )

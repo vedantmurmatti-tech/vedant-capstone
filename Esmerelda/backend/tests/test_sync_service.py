@@ -15,6 +15,7 @@ Run with:
     venv/Scripts/python.exe tests/test_sync_service.py
 """
 
+import base64
 import http.server
 import os
 import shutil
@@ -373,8 +374,53 @@ _FULL_COURSE_PAGE_HTML = """
 # the sizes/content are large and distinctive enough to verify a genuine,
 # complete, correct byte-for-byte download rather than a truncated or
 # placeholder one.
-_FAKE_PDF_BYTES = b"%PDF-1.4 FAKE-LECTURE-NOTES-CONTENT-FOR-TESTING-" + bytes(range(200))
-_FAKE_DOCX_BYTES = b"PK\x03\x04 FAKE-DOCX-SYLLABUS-CONTENT-FOR-TESTING-" + bytes(range(200))
+# A real, valid, parseable PDF (generated once with fpdf2, not a project
+# dependency — embedded as bytes so the test suite needs no extra
+# dependency to reproduce it) containing real, distinctive text, so the
+# Knowledge Base's real text-extraction step (storage/text_extraction.py)
+# can be exercised end-to-end through the real sync pipeline, not just
+# unit-tested in isolation. Real, meaningful content — not a placeholder —
+# specifically so a later chat-retrieval test can search for it.
+_REAL_PDF_TEXT = "The Course Outline requires three deliverables: a report, a prototype, and a presentation."
+_FAKE_PDF_BYTES = base64.b64decode(
+    "JVBERi0xLjMKJenr8b8KMSAwIG9iago8PAovQ291bnQgMQovS2lkcyBbMyAwIFJdCi9NZWRpYUJveCBb"
+    "MCAwIDU5NS4yOCA4NDEuODldCi9UeXBlIC9QYWdlcwo+PgplbmRvYmoKMiAwIG9iago8PAovT3BlbkFj"
+    "dGlvbiBbMyAwIFIgL0ZpdEggbnVsbF0KL1BhZ2VMYXlvdXQgL09uZUNvbHVtbgovUGFnZXMgMSAwIFIK"
+    "L1R5cGUgL0NhdGFsb2cKPj4KZW5kb2JqCjMgMCBvYmoKPDwKL0NvbnRlbnRzIDQgMCBSCi9QYXJlbnQg"
+    "MSAwIFIKL1Jlc291cmNlcyA2IDAgUgovVHlwZSAvUGFnZQo+PgplbmRvYmoKNCAwIG9iago8PAovRmls"
+    "dGVyIC9GbGF0ZURlY29kZQovTGVuZ3RoIDEzMwo+PgpzdHJlYW0KeJwdzbEKwjAUBdC9X3FHhRKbSok6"
+    "Kjq4uOQHIr3SSEnqy6vi30tdz3JaXKvGdA6f6uixuVjY1jQN/ANnv9DWGruD23fGOfgeKz8QpzxLIW6z"
+    "jjERwtcchQU6CImeY3xTwn1kOSBAOGXRGgGTZM36nVgjpP4PLEwaNOZk1vDPZf0B76ItSAplbmRzdHJl"
+    "YW0KZW5kb2JqCjUgMCBvYmoKPDwKL0Jhc2VGb250IC9IZWx2ZXRpY2EKL0VuY29kaW5nIC9XaW5BbnNp"
+    "RW5jb2RpbmcKL1N1YnR5cGUgL1R5cGUxCi9UeXBlIC9Gb250Cj4+CmVuZG9iago2IDAgb2JqCjw8Ci9G"
+    "b250IDw8L0YxIDUgMCBSPj4KL1Byb2NTZXQgWy9QREYgL1RleHQgL0ltYWdlQiAvSW1hZ2VDIC9JbWFn"
+    "ZUldCj4+CmVuZG9iago3IDAgb2JqCjw8Ci9DcmVhdGlvbkRhdGUgKEQ6MjAyNjA5MTkxMTU3MjRaKQo+"
+    "PgplbmRvYmoKeHJlZgowIDgKMDAwMDAwMDAwMCA2NTUzNSBmIAowMDAwMDAwMDE1IDAwMDAwIG4gCjAw"
+    "MDAwMDAxMDIgMDAwMDAgbiAKMDAwMDAwMDIwNSAwMDAwMCBuIAowMDAwMDAwMjg1IDAwMDAwIG4gCjAw"
+    "MDAwMDA0OTAgMDAwMDAgbiAKMDAwMDAwMDU4NyAwMDAwMCBuIAowMDAwMDAwNjc0IDAwMDAwIG4gCnRy"
+    "YWlsZXIKPDwKL1NpemUgOAovUm9vdCAyIDAgUgovSW5mbyA3IDAgUgovSUQgWzwzNDNBNzg4NjEyMkM3"
+    "QTg1ODRCRUIzOUE4MDQwNUMyMD48MzQzQTc4ODYxMjJDN0E4NTg0QkVCMzlBODA0MDVDMjA+XQo+Pgpz"
+    "dGFydHhyZWYKNzI5CiUlRU9GCg=="
+)
+
+
+def _build_real_docx_bytes(text: str) -> bytes:
+    """A real, valid DOCX with the given real text — python-docx is
+    already a real project dependency (storage/text_extraction.py), so
+    this needs no extra test-only dependency."""
+    import io
+
+    import docx
+
+    document = docx.Document()
+    document.add_paragraph(text)
+    buffer = io.BytesIO()
+    document.save(buffer)
+    return buffer.getvalue()
+
+
+_REAL_DOCX_TEXT = "The TRENDS Matrix summarizes emerging market trends relevant to the course project."
+_FAKE_DOCX_BYTES = _build_real_docx_bytes(_REAL_DOCX_TEXT)
 
 _FULL_COURSE_SECTION_PAGE_HTML = """
 <html><body>
@@ -425,11 +471,22 @@ class _FullFakeMoodleHandler(http.server.BaseHTTPRequestHandler):
         if not self._authenticated():
             body = _LOGIN_PAGE_HTML
         elif self.path.startswith("/mod/resource/view.php?id=999"):
-            # A real downloadable file, served with a real, non-HTML
-            # content type — exactly what inspect_resource()/
-            # process_resource() (moodle/document_downloader.py, reused
-            # unchanged) look for to recognize an actual file rather than
-            # an HTML wrapper page.
+            # Real Moodle redirects a /mod/resource/view.php wrapper page
+            # to a pluginfile.php URL carrying the file's real name — this
+            # is what lets storage/text_extraction.py's
+            # guess_extractable_type() (driven by the real downloaded
+            # filename, not Moodle's "Resource" activity-type label — a
+            # real bug this project's own testing caught, see
+            # BUILD_LOG.md) correctly recognize this as a PDF. Reproducing
+            # that redirect here rather than serving the file directly at
+            # this URL, specifically so this fixture matches real Moodle
+            # behavior instead of accidentally only working because the
+            # test server is simpler than the real thing.
+            self.send_response(302)
+            self.send_header("Location", "/pluginfile.php/101/mod_resource/content/1/Lecture%20Notes.pdf")
+            self.end_headers()
+            return
+        elif self.path.startswith("/pluginfile.php/101/mod_resource/content/1/Lecture"):
             self.send_response(200)
             self.send_header("Content-Type", "application/pdf")
             self.send_header("Content-Length", str(len(_FAKE_PDF_BYTES)))
@@ -500,8 +557,11 @@ try:
         "        on_disk = (get_documents_dir() / d.file_path).is_file()\n"
         "        size = (get_documents_dir() / d.file_path).stat().st_size if on_disk else -1\n"
         "        print(f'DOCUMENT:{d.name}:{d.resource_id}:{resource.name if resource else None}:{on_disk}:{size}:{d.current_hash}')\n"
+        "        print(f'EXTRACTED_TEXT:{d.id}:{d.extracted_text!r}')\n"
         "    versions = session.query(DocumentVersion).count()\n"
         "    print(f'VERSION_COUNT:{versions}')\n"
+        "    indexed_count = session.query(Document).filter(Document.extracted_text.isnot(None)).count()\n"
+        "    print(f'INDEXED_COUNT:{indexed_count}')\n"
         "# Run a second sync in the same process/database to prove idempotency\n"
         "# (instruction 8) — already-downloaded resources must be skipped, not\n"
         "# re-downloaded or duplicated.\n"
@@ -573,6 +633,18 @@ try:
         check(
             "6r. One DocumentVersion was created for each of the 2 real documents",
             version_count_line == "VERSION_COUNT:2",
+        )
+
+        extracted_lines = [l for l in proc.stdout.splitlines() if l.startswith("EXTRACTED_TEXT:")]
+        indexed_count_line = next((l for l in proc.stdout.splitlines() if l.startswith("INDEXED_COUNT:")), None)
+        check(
+            "6y. The Knowledge Base's real text-extraction step ran on both real downloaded files "
+            "(a real PDF and a real DOCX) and stored their actual real text in Document.extracted_text",
+            any(_REAL_PDF_TEXT in l for l in extracted_lines) and any(_REAL_DOCX_TEXT in l for l in extracted_lines),
+        )
+        check(
+            "6z. Both real, extractable documents are counted as indexed (Document.extracted_text IS NOT NULL)",
+            indexed_count_line == "INDEXED_COUNT:2",
         )
 
         second_downloaded_line = next((l for l in proc.stdout.splitlines() if l.startswith("RESULT2_DOCS_DOWNLOADED:")), None)
@@ -689,6 +761,21 @@ try:
         "6v. The document-download step ran without breaking the already-working course/assignment/resource "
         "sync — the exact same summary counts from checks 6c/6d/6e still appear after this step ran",
         "Moodle sync summary: courses_discovered=1 assignments_discovered=2 resources_discovered=4" in combined_output,
+    )
+    check(
+        "6w. Explicit call-site logging around _sync_course_assignments() (added to debug a real "
+        "'assignments_discovered=0' production regression) shows the call was genuinely reached and "
+        "returned a real, non-zero result — added specifically so the NEXT production run can show "
+        "unambiguously whether this call happens at all",
+        "about to call _sync_course_assignments: active_courses_count=1" in combined_output
+        and "returned from _sync_course_assignments: assignments_discovered=2 assignments_persisted=2" in combined_output,
+    )
+    check(
+        "6x. Reproduces the exact current production pipeline ordering (course/resource sync -> document "
+        "sync -> assignment sync -> persistence) and proves all four categories succeed together in the "
+        "same run: courses>0, resources>0, documents>0, assignments>0 — this is the exact combination "
+        "production reported as broken (documents working, assignments zero)",
+        courses_p > 0 and resources_p > 0 and documents_downloaded > 0 and assignments_p > 0,
     )
 
     full_httpd.shutdown()

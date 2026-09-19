@@ -84,6 +84,31 @@ _PYTHON_TOOL_SCHEMAS: dict[str, GroqToolDef] = {
             },
         },
     },
+    "search_document_content": {
+        "type": "function",
+        "function": {
+            "name": "search_document_content",
+            "description": (
+                "Search the ACTUAL text content of real, downloaded Moodle documents (PDFs, DOCX, "
+                'PPTX) for a specific question or topic — e.g. "what does the Service Design project '
+                'brief say about requirements" or "summarize the TRENDS Matrix document". Use this '
+                "whenever the user asks what a document says, requires, or covers — "
+                "get_course_documents only returns document names/metadata, never their content. "
+                "Returns the actual matching excerpts, quoted from the real files, with which "
+                "document/course each came from."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The question or topic to search for, in the user's own words.",
+                    }
+                },
+                "required": ["query"],
+            },
+        },
+    },
     "plan_assignment_action": {
         "type": "function",
         "function": {

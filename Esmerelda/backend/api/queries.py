@@ -59,6 +59,18 @@ def resource_out(resource: Resource, course: Course) -> ResourceOut:
 
 
 def document_out(document: Document, course: Course | None, updated_at: datetime | None) -> DocumentOut:
+    # Previously always "indexed", regardless of whether any real
+    # searchable text had ever actually been extracted — now reflects
+    # storage/text_extraction.py's real result (see
+    # storage/models.py's Document.extracted_text / BUILD_LOG.md's
+    # Knowledge Base retrieval entry): "indexed" only when this document
+    # genuinely has extracted, chat-searchable text. "queued" (not
+    # "not indexed" — frontend/src/types/index.ts's IndexingStatus type
+    # and DocumentIndexRow.tsx's `indexingMeta` lookup only recognize
+    # "indexed"/"indexing"/"queued"; a value outside that set would make
+    # `indexing.tone` undefined and crash that row's render — checked
+    # directly before choosing this value) for a real download whose type
+    # isn't extractable (e.g. a ZIP) or whose extraction failed.
     return DocumentOut(
         id=document.id,
         resourceId=document.resource_id,
@@ -67,7 +79,7 @@ def document_out(document: Document, course: Course | None, updated_at: datetime
         name=document.name,
         fileType=derive_file_type(document.name),
         updatedAt=updated_at,
-        indexingStatus="indexed",
+        indexingStatus="indexed" if document.extracted_text else "queued",
         downloadUrl=f"/api/documents/{document.id}/download",
     )
 

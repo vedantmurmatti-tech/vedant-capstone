@@ -53,6 +53,13 @@ class Document(Base):
     file_path: Mapped[str] = mapped_column(String(1000))
     file_type: Mapped[str | None] = mapped_column(String(100))
     current_hash: Mapped[str | None] = mapped_column(String(64))
+    # Plain extracted text (PDF/DOCX/PPTX — see storage/text_extraction.py),
+    # populated once at download time by moodle/document_downloader.py.
+    # This IS the Knowledge Base's indexed representation — chat-time
+    # retrieval (api/document_retrieval.py) searches this column directly
+    # rather than ever re-reading files from disk per chat request. NULL
+    # for documents whose type isn't supported or extraction failed.
+    extracted_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class DocumentVersion(Base):

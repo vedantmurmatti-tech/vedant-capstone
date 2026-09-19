@@ -51,6 +51,17 @@ def _migrate_add_missing_columns() -> None:
             conn.execute(text("ALTER TABLE sync_runs ADD COLUMN login_diagnostics_captured_at DATETIME"))
             conn.commit()
 
+        # documents.extracted_text — the Knowledge Base's indexed text
+        # representation (see storage/models.py's Document.extracted_text
+        # and storage/text_extraction.py) — added after `documents` already
+        # existed on some databases.
+        documents_columns = {
+            row[1] for row in conn.execute(text("PRAGMA table_info(documents)"))
+        }
+        if documents_columns and "extracted_text" not in documents_columns:
+            conn.execute(text("ALTER TABLE documents ADD COLUMN extracted_text TEXT"))
+            conn.commit()
+
 
 def init_db():
     from . import models
