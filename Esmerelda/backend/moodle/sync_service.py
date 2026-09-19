@@ -873,22 +873,107 @@ def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) 
     per_course_discovered: dict[str, int] = {}
     links = timeline.locator("a")
     link_count = links.count()
-    logger.info("[SYNC DEBUG] Timeline block found: %d candidate 'is due' link(s) to inspect", link_count)
+    logger.info("[SYNC DEBUG] Timeline block found: %d candidate link(s) to inspect", link_count)
+
+    # Pass 1: read every candidate's data from the Timeline page itself and
+    # collect it into a plain list — no navigation happens in this loop.
+    # This is deliberately separate from pass 2 (below), which fetches each
+    # accepted candidate's submission status and persists it. A previous
+    # version did both in a single loop over the live `links` Playwright
+    # locator (scoped to this Timeline page) — but fetching submission
+    # status navigates the shared `page` to the assignment's own page
+    # (see _fetch_submission_status()), which leaves the Timeline page
+    # entirely. Every `links.nth(i)` call after that point was then
+    # querying a `page` that had moved on to a completely different URL,
+    # which doesn't raise cleanly — it hangs, retrying to find a match
+    # that no longer exists until Playwright's own default action timeout
+    # (reproduced directly: with 2+ real candidates, this cost 30+ seconds
+    # per candidate after the first, moving the whole sync from ~2 seconds
+    # to a full timeout/hang). This bug pre-dates this change and was
+    # never triggered before only because the old "is due"-text-only
+    # filter (see below) discarded every real candidate before any of
+    # them ever reached the submission-status fetch at all.
+    candidates: list[dict] = []
     for i in range(link_count):
         try:
             link = links.nth(i)
-            if not link.is_visible():
-                continue
-            text = link.inner_text().strip()
-            if not text or not re.search(r"\bis due\b", text, re.I):
-                continue
-            href = link.get_attribute("href")
+            # Every candidate is logged unconditionally, before any filter
+            # runs — this is what let the real root cause (below) be found
+            # from a real production run instead of guessed at: a prior
+            # version rejected every one of these solely because
+            # `re.search(r"is due", text)` didn't match the link's own
+            # text, with no logging distinguishing that from any other
+            # rejection reason.
+            try:
+                candidate_text = link.inner_text().strip()
+            except Exception:
+                candidate_text = "<unavailable>"
+            try:
+                candidate_href_raw = link.get_attribute("href")
+            except Exception:
+                candidate_href_raw = None
+            try:
+                candidate_html = link.evaluate("el => el.outerHTML")[:300]
+            except Exception:
+                candidate_html = "<unavailable>"
+            try:
+                candidate_parent_text = link.locator("..").inner_text().strip()[:200]
+            except Exception:
+                candidate_parent_text = "<unavailable>"
+            logger.info(
+                "[SYNC DEBUG] Timeline candidate %d/%d: text=%r href=%r html=%r parent_text=%r",
+                i, link_count, candidate_text, candidate_href_raw, candidate_html, candidate_parent_text,
+            )
+
+            text = candidate_text
+            href = candidate_href_raw
             if not href:
+                logger.info("[SYNC DEBUG] Timeline candidate %d rejected: reason=no_href", i)
                 continue
             href = urljoin(moodle_url, href)
+
+            # Root cause of the real production bug this fixes (see
+            # BUILD_LOG.md): identifying a Timeline entry as a real
+            # assignment previously REQUIRED the literal English phrase
+            # "is due" inside the link's own visible text. Moodle's actual
+            # core_calendar Timeline template does not render that phrase
+            # into the event-name link at all in current versions — the
+            # link's text is just the activity's name (e.g. "Assessment
+            # 2: ..."), with the due date/time shown as separate,
+            # non-link text nearby. That silently rejected every real
+            # candidate, 100% of the time, regardless of how many were
+            # found. The one thing that IS still a stable, semantic,
+            # Moodle-core signal (not a themeable or locale-dependent
+            # string) is the href itself: every assignment activity's
+            # canonical view URL is `mod/assign/view.php?id=N` — this has
+            # been true since Moodle's URL routing was introduced and
+            # doesn't depend on theme, version, or display language. A
+            # link is now treated as a real assignment candidate if
+            # EITHER its href matches that pattern OR its own text still
+            # happens to say "is due" (older Moodle/theme combinations,
+            # kept for backward compatibility) — never requiring the text
+            # match alone, which is what silently discarded 100% of real
+            # candidates in production.
+            is_assignment_href = "/mod/assign/" in href
+            has_is_due_text = bool(text) and bool(re.search(r"\bis due\b", text, re.I))
+            if not is_assignment_href and not has_is_due_text:
+                logger.info(
+                    "[SYNC DEBUG] Timeline candidate %d rejected: reason=not_an_assignment_link "
+                    "(href has no /mod/assign/ and text has no 'is due')",
+                    i,
+                )
+                continue
+            if not text:
+                logger.info("[SYNC DEBUG] Timeline candidate %d rejected: reason=empty_text", i)
+                continue
+
             assignment_name = re.sub(r"\s+is due\s*$", "", text, flags=re.I).strip()
 
             # Walk upward to find both the due date text and which active course this belongs to.
+            # Whitespace is normalized before matching — real Moodle markup routinely wraps a
+            # course name across nested elements, producing irregular internal whitespace/newlines
+            # in inner_text() that a plain substring check against the exact discovered name (a
+            # single-spaced string) would otherwise miss.
             due_date = None
             course_name = None
             parent = link
@@ -896,13 +981,14 @@ def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) 
                 try:
                     parent = parent.locator("..")
                     parent_text = parent.inner_text().strip()
+                    parent_text_normalized = " ".join(parent_text.split())
                 except Exception:
                     break
                 if due_date is None:
                     due_date = _extract_due_date(parent_text, assignment_name)
                 if course_name is None:
                     for name in active_names:
-                        if name in parent_text:
+                        if " ".join(name.split()) in parent_text_normalized:
                             course_name = name
                             break
                 if due_date is not None and course_name is not None:
@@ -910,35 +996,52 @@ def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) 
 
             if course_name is None:
                 logger.info(
-                    "[SYNC DEBUG] assignment '%s' matched no active course (not one of the %d discovered) — skipped, not guessed",
-                    assignment_name, len(active_names),
+                    "[SYNC DEBUG] Timeline candidate %d rejected: reason=no_matching_active_course "
+                    "assignment=%r (checked against %d active course name(s), not one of them found in "
+                    "up to 8 ancestor levels' text) — skipped, not guessed",
+                    i, assignment_name, len(active_names),
                 )
                 continue
 
             discovered += 1
             per_course_discovered[course_name] = per_course_discovered.get(course_name, 0) + 1
-
-            moodle_id = _course_moodle_id(href) or href
-            submission_status = _fetch_submission_status(page, href)
-            saved = save_assignment(
-                moodle_id=moodle_id,
-                course_name=course_name,
-                name=assignment_name,
-                submission_url=href,
-                due_date=due_date,
-                submission_status=submission_status,
-            )
-            if saved is not None:
-                persisted += 1
-                logger.info("[SYNC DEBUG] assignment written to DB: course='%s' name=%r", course_name, assignment_name)
-            else:
-                logger.warning("[SYNC DEBUG] assignment discovered but NOT persisted (save_assignment returned None): course='%s' name=%r", course_name, assignment_name)
+            candidates.append({
+                "moodle_id": _course_moodle_id(href) or href,
+                "course_name": course_name,
+                "name": assignment_name,
+                "href": href,
+                "due_date": due_date,
+            })
         except Exception as exc:
             logger.warning(
                 "[SYNC DEBUG] skipped one Timeline entry (link %d/%d): %s: %s",
                 i, link_count, type(exc).__name__, exc,
             )
             continue
+
+    # Pass 2: for each accepted candidate, fetch its submission status
+    # (this navigates `page` away from the Timeline — see the note above
+    # pass 1) and persist it. Safe now because nothing after this point
+    # re-queries the Timeline page's own DOM — `candidates` is a plain
+    # list already fully read from it.
+    for candidate in candidates:
+        submission_status = _fetch_submission_status(page, candidate["href"])
+        saved = save_assignment(
+            moodle_id=candidate["moodle_id"],
+            course_name=candidate["course_name"],
+            name=candidate["name"],
+            submission_url=candidate["href"],
+            due_date=candidate["due_date"],
+            submission_status=submission_status,
+        )
+        if saved is not None:
+            persisted += 1
+            logger.info("[SYNC DEBUG] assignment written to DB: course='%s' name=%r", candidate["course_name"], candidate["name"])
+        else:
+            logger.warning(
+                "[SYNC DEBUG] assignment discovered but NOT persisted (save_assignment returned None): course='%s' name=%r",
+                candidate["course_name"], candidate["name"],
+            )
 
     logger.info(
         "[SYNC DEBUG] assignments discovered per course: %s (total discovered=%d persisted=%d)",
