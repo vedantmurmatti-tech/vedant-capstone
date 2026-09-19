@@ -49,7 +49,9 @@ _PYTHON_TOOL_SCHEMAS: dict[str, GroqToolDef] = {
             "description": (
                 'Look up real information about one specific course by name or course code '
                 '(e.g. "Tangible Interfaces" or "DESG322"). Returns the course\'s full name, '
-                "short code, description, and how many assignments/resources are tracked for it."
+                "short code, description, and how many assignments/resources are tracked for it — "
+                "COUNTS only, not the assignments themselves. Use get_course_assignments instead when "
+                "the user wants the actual list of assignments/due dates for a course."
             ),
             "parameters": {
                 "type": "object",
@@ -57,6 +59,34 @@ _PYTHON_TOOL_SCHEMAS: dict[str, GroqToolDef] = {
                     "course_query": {
                         "type": "string",
                         "description": "The course name or code as mentioned by the user.",
+                    }
+                },
+                "required": ["course_query"],
+            },
+        },
+    },
+    "get_course_assignments": {
+        "type": "function",
+        "function": {
+            "name": "get_course_assignments",
+            "description": (
+                "Look up the REAL tracked assignments for ONE specific course — with their real due "
+                "dates, urgency, and submission status. Use this — not get_course_info, which only "
+                "returns a count — whenever the user asks what's due, or what assignments exist, for a "
+                "named or specific course (e.g. a full course name like "
+                '"DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Learning" '
+                'or a short reference like "DESG319" or "Tangible Interfaces"). The course is resolved '
+                "deterministically from the real database (by Moodle course id, short name, course "
+                "code, or full name — tolerant of a truncated or partial course name) — never guess a "
+                "course's assignments from get_upcoming_assignments' cross-course list, which only "
+                "shows the 8 most urgent overall and may omit a specific course entirely."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "course_query": {
+                        "type": "string",
+                        "description": "The course name, short code, or Moodle course id, exactly as the user mentioned it.",
                     }
                 },
                 "required": ["course_query"],

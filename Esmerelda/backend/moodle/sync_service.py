@@ -856,59 +856,107 @@ def _sync_course_resources(
     return discovered, persisted, bool(additional_sections), assignment_candidates
 
 
-def _extract_due_date(text: str, assignment_name: str) -> datetime | None:
-    pattern = re.compile(
-        r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s*(\d{1,2}\s+\w+\s+\d{4})\s+(\d{1,2}:\d{2})",
-        re.IGNORECASE,
-    )
-    position = text.find(assignment_name)
-    if position == -1:
-        return None
-    matches = list(pattern.finditer(text[:position]))
-    if not matches:
-        return None
-    match = matches[-1]
+_DUE_DATE_PATTERN = re.compile(
+    r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s*(\d{1,2}\s+\w+\s+\d{4})\s+(\d{1,2}:\d{2})",
+    re.IGNORECASE,
+)
+
+
+def _parse_due_date_match(match: re.Match) -> datetime | None:
     try:
         return datetime.strptime(f"{match.group(2)} {match.group(3)}", "%d %B %Y %H:%M")
     except ValueError:
         return None
 
 
+def _extract_due_date(text: str, assignment_name: str) -> datetime | None:
+    position = text.find(assignment_name)
+    if position == -1:
+        return None
+    matches = list(_DUE_DATE_PATTERN.finditer(text[:position]))
+    if not matches:
+        return None
+    return _parse_due_date_match(matches[-1])
+
+
+def _extract_due_date_from_assignment_page(page_text: str) -> datetime | None:
+    """Best-effort: looks for Moodle's own "Due date" label on the
+    assignment's own view page and parses the same
+    "Weekday, D Month YYYY H:MM" pattern _extract_due_date() already
+    looks for in Timeline text, searched in a bounded window right after
+    that label. This is what lets the course-page secondary discovery
+    path (_sync_course_page_assignments(), which has no Timeline text at
+    all to read a due date from — see its own docstring) recover a real
+    due date instead of always leaving one null, and gives the Timeline
+    path itself a second chance to find one if the Timeline text search
+    ever misses. Reuses the exact date pattern/parsing already
+    established for Timeline text rather than assuming a different
+    format, since both are almost certainly rendered by the same
+    underlying Moodle date-formatting call.
+
+    NOT verified against a real, live Moodle instance from this
+    environment (no real Moodle account was available) — if the actual
+    theme doesn't render "Due date" as visible label text near the real
+    date, or formats the date/time differently, this returns None, the
+    same safe default every other best-effort field in this file already
+    falls back to. Never treated as an error; a missing due date is not
+    a sync failure."""
+    label_match = re.search(r"due date\s*[:\-]?\s*", page_text, re.IGNORECASE)
+    if label_match is None:
+        return None
+    window = page_text[label_match.end():label_match.end() + 100]
+    date_match = _DUE_DATE_PATTERN.search(window)
+    if date_match is None:
+        return None
+    return _parse_due_date_match(date_match)
+
+
 _MAX_ASSIGNMENT_DESCRIPTION_CHARS = 2000
 
 
-def _fetch_assignment_page_details(page, assignment_url: str) -> tuple[str | None, str | None]:
+def _fetch_assignment_page_details(page, assignment_url: str) -> tuple[str | None, str | None, "datetime | None"]:
     """Best-effort only: visits the assignment's own page ONCE and reads
-    both its submission-status table and its description/instructions
-    text — combined into a single function (replacing the previous
-    _fetch_submission_status()) specifically so extracting a description
-    costs no additional page navigation beyond what this sync already
-    does for submission status. Different Moodle themes/versions render
-    either piece differently, so any failure extracting either one is
-    swallowed independently — a missing submission status or a missing
-    description is not treated as a sync failure, and one being
-    unavailable never prevents the other from being read.
+    its submission-status table, its description/instructions text, AND
+    its own "Due date" label — combined into a single function
+    (replacing the previous _fetch_submission_status()) specifically so
+    none of this costs any additional page navigation beyond what this
+    sync already does for submission status. Different Moodle themes/
+    versions render each piece differently, so any failure extracting
+    one is swallowed independently — one being unavailable never
+    prevents another from being read, and none of this is treated as a
+    sync failure.
 
-    Returns (submission_status, description) — either or both may be
+    Returns (submission_status, description, due_date) — any may be
     None.
+
+    Due-date extraction here (_extract_due_date_from_assignment_page())
+    exists specifically for the course-page secondary discovery path
+    (_sync_course_page_assignments()), which has no Timeline text at all
+    to read a due date from — before this, every assignment discovered
+    only that way was permanently stuck with due_date=None even when
+    Moodle's own assignment page states it plainly. The dashboard
+    Timeline's own due-date extraction (_extract_due_date(), used by
+    _sync_course_assignments()) is completely unchanged — this is an
+    additional, independent source used as a fallback there, never a
+    replacement.
 
     Description extraction targets Moodle's `#intro` container, which is
     mod_assign's own core view.php template output (the assignment
     intro/instructions box), not a theme-specific CSS class — this
-    should be stable across themes in principle. This has NOT been
-    verified against a real, live Moodle instance from this environment
-    (no real Moodle account was available to this audit) — if the actual
-    target site's theme renders this differently, extraction simply
-    keeps returning None, the same safe default as any other best-effort
-    field in this file; nothing downstream treats a missing description
-    as an error."""
+    should be stable across themes in principle. Neither this nor the
+    due-date extraction above has been verified against a real, live
+    Moodle instance from this environment (no real Moodle account was
+    available) — if the actual target site's theme renders either
+    differently, extraction simply keeps returning None, the same safe
+    default as any other best-effort field in this file."""
     submission_status: str | None = None
     description: str | None = None
+    due_date: datetime | None = None
     try:
         page.goto(assignment_url, wait_until="domcontentloaded", timeout=20000)
         page.wait_for_timeout(1000)
     except Exception:
-        return None, None
+        return None, None, None
 
     try:
         status_table = page.locator("table.submissionstatustable, .submissionstatustable").first
@@ -928,7 +976,13 @@ def _fetch_assignment_page_details(page, assignment_url: str) -> tuple[str | Non
     except Exception:
         pass
 
-    return submission_status, description
+    try:
+        page_text = page.locator("body").inner_text()
+        due_date = _extract_due_date_from_assignment_page(page_text)
+    except Exception:
+        pass
+
+    return submission_status, description, due_date
 
 
 def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) -> tuple[int, int, set[str]]:
@@ -1200,13 +1254,18 @@ def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) 
     persisted_moodle_ids: set[str] = set()
     for candidate in candidates:
         try:
-            submission_status, description = _fetch_assignment_page_details(page, candidate["href"])
+            submission_status, description, page_due_date = _fetch_assignment_page_details(page, candidate["href"])
+            # The Timeline text's own due-date extraction (candidate["due_date"])
+            # is preferred — unchanged, still the primary source. The
+            # assignment page's own "Due date" label is only used as a
+            # fallback when the Timeline text search found nothing, never as
+            # an override of a value it already found.
             saved = save_assignment(
                 moodle_id=candidate["moodle_id"],
                 course_name=candidate["course_name"],
                 name=candidate["name"],
                 submission_url=candidate["href"],
-                due_date=candidate["due_date"],
+                due_date=candidate["due_date"] or page_due_date,
                 submission_status=submission_status,
                 course_moodle_id=candidate.get("course_moodle_id"),
                 assignment_url=candidate["href"],
@@ -1279,18 +1338,22 @@ def _sync_course_page_assignments(
                 continue  # already found and persisted via the Timeline — not a new discovery
 
             discovered += 1
-            submission_status, description = _fetch_assignment_page_details(page, candidate["href"])
+            submission_status, description, due_date = _fetch_assignment_page_details(page, candidate["href"])
             saved = save_assignment(
                 moodle_id=moodle_id,
                 course_name=candidate["course_name"],
                 name=candidate["name"],
                 submission_url=candidate["href"],
-                # No due date is reliably available from a generic course
-                # page link (unlike the Timeline, which has its own due-date
-                # text nearby) — None here is safe: save_assignment() only
-                # overwrites an existing due_date when given a real value,
-                # never erasing one a prior Timeline-based sync recorded.
-                due_date=None,
+                # No due date is available from the course-page link itself
+                # (unlike the Timeline, which has its own due-date text
+                # nearby) — but _fetch_assignment_page_details() now also
+                # reads the assignment's own "Due date" label from the same
+                # page visit this line already made for submission status,
+                # so this is no longer always None. Still safe either way:
+                # save_assignment() only overwrites an existing due_date
+                # when given a real value, never erasing one a prior
+                # Timeline-based sync recorded.
+                due_date=due_date,
                 submission_status=submission_status,
                 course_moodle_id=candidate.get("course_moodle_id"),
                 assignment_url=candidate["href"],
