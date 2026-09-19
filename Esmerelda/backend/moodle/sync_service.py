@@ -49,6 +49,7 @@ from urllib.parse import urljoin
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 from storage.crud import record_login_diagnostic, save_assignment, save_course, save_resource
+from moodle.document_downloader import sync_resource_documents
 
 MOODLE_URL_DEFAULT = "https://lms.flame.edu.in"
 
@@ -117,6 +118,12 @@ class SyncResult:
     assignments_discovered: int = 0
     resources_discovered: int = 0
     course_names: list[str] = field(default_factory=list)
+    # Document-download counts (moodle/document_downloader.py's
+    # sync_resource_documents(), called below) — separate from the fields
+    # above since they're a downstream step over already-persisted
+    # resources, not part of course/assignment/resource discovery itself.
+    documents_eligible: int = 0
+    documents_downloaded: int = 0
 
 
 def _get_credentials() -> tuple[str, str, str]:
@@ -1125,6 +1132,22 @@ def run_sync(run_id: int | None = None) -> SyncResult:
                     result.assignments_discovered, result.assignments_synced = _sync_course_assignments(
                         page, active_courses, moodle_url
                     )
+
+                # Downloads the actual file for each already-persisted, downloadable
+                # Resource (PDF/DOCX/PPTX/XLSX/ZIP/etc., or a /mod/resource/ wrapper
+                # page that resolves to one) and creates the matching Document/
+                # DocumentVersion rows — see moodle/document_downloader.py's
+                # sync_resource_documents() and BUILD_LOG.md for why this step was
+                # previously entirely missing from the automated sync (Resource rows
+                # were being persisted, but nothing ever downloaded their files).
+                # Wrapped so a document-download problem never aborts the
+                # already-successful course/assignment/resource sync above it.
+                try:
+                    document_counts = sync_resource_documents(page)
+                    result.documents_eligible = document_counts.eligible
+                    result.documents_downloaded = document_counts.succeeded
+                except Exception as exc:
+                    logger.exception("[SYNC DEBUG] document sync failed unexpectedly: %s: %s", type(exc).__name__, exc)
 
                 logger.info("[SYNC DEBUG] database commit completed")
                 logger.info(

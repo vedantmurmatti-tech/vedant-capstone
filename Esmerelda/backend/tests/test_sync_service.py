@@ -356,12 +356,25 @@ _FULL_COURSE_PAGE_HTML = """
 <html><body>
 <div class="usermenu"><a href="/login/logout.php?sesskey=x">Log out</a></div>
 <a href="/mod/resource/view.php?id=999">Lecture Notes.pdf</a>
+<a href="/files/course-syllabus.docx">Course Syllabus</a>
 <div class="collapse" id="topic-2" style="display:none;">
   <a href="/mod/resource/view.php?id=888">Collapsed Section Handout.pdf</a>
 </div>
 <a href="/course/view.php?id=101&section=1">Week 2</a>
 </body></html>
 """
+
+# Real binary content served for the two downloadable resources above, so
+# the document-download pipeline can be tested against actual bytes with
+# real, non-text/html content types — not just HTML pages. Not real PDF/
+# DOCX files internally (nothing here parses their structure — inspect_
+# resource() and process_resource() only look at Content-Type and byte
+# content, exactly like they would for a real Moodle-served file), but
+# the sizes/content are large and distinctive enough to verify a genuine,
+# complete, correct byte-for-byte download rather than a truncated or
+# placeholder one.
+_FAKE_PDF_BYTES = b"%PDF-1.4 FAKE-LECTURE-NOTES-CONTENT-FOR-TESTING-" + bytes(range(200))
+_FAKE_DOCX_BYTES = b"PK\x03\x04 FAKE-DOCX-SYLLABUS-CONTENT-FOR-TESTING-" + bytes(range(200))
 
 _FULL_COURSE_SECTION_PAGE_HTML = """
 <html><body>
@@ -411,6 +424,25 @@ class _FullFakeMoodleHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if not self._authenticated():
             body = _LOGIN_PAGE_HTML
+        elif self.path.startswith("/mod/resource/view.php?id=999"):
+            # A real downloadable file, served with a real, non-HTML
+            # content type — exactly what inspect_resource()/
+            # process_resource() (moodle/document_downloader.py, reused
+            # unchanged) look for to recognize an actual file rather than
+            # an HTML wrapper page.
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Length", str(len(_FAKE_PDF_BYTES)))
+            self.end_headers()
+            self.wfile.write(_FAKE_PDF_BYTES)
+            return
+        elif self.path.startswith("/files/course-syllabus.docx"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            self.send_header("Content-Length", str(len(_FAKE_DOCX_BYTES)))
+            self.end_headers()
+            self.wfile.write(_FAKE_DOCX_BYTES)
+            return
         elif self.path.startswith("/my/") or self.path == "/my":
             body = _FULL_MY_PAGE_HTML
         elif self.path.startswith("/course/view.php") and "section=" in self.path:
@@ -450,13 +482,34 @@ try:
 
     tmp_data_dir = tempfile.mkdtemp(prefix="esmerelda_sync_e2e_")
     subprocess_script = (
-        "import logging; logging.basicConfig(level=logging.INFO, format='%(message)s'); "
-        "from storage.database import init_db; init_db(); "
-        "from moodle.sync_service import run_sync; "
-        "result = run_sync(); "
+        "import logging; logging.basicConfig(level=logging.INFO, format='%(message)s')\n"
+        "from storage.database import init_db; init_db()\n"
+        "from moodle.sync_service import run_sync\n"
+        "result = run_sync()\n"
         "print(f'RESULT:{result.courses_discovered}:{result.courses_synced}:"
         "{result.resources_discovered}:{result.resources_synced}:"
-        "{result.assignments_discovered}:{result.assignments_synced}')"
+        "{result.assignments_discovered}:{result.assignments_synced}:"
+        "{result.documents_eligible}:{result.documents_downloaded}')\n"
+        "from storage.database import SessionLocal\n"
+        "from storage.models import Document, DocumentVersion, Resource\n"
+        "from storage.paths import get_documents_dir\n"
+        "with SessionLocal() as session:\n"
+        "    docs = session.query(Document).all()\n"
+        "    for d in docs:\n"
+        "        resource = session.get(Resource, d.resource_id) if d.resource_id else None\n"
+        "        on_disk = (get_documents_dir() / d.file_path).is_file()\n"
+        "        size = (get_documents_dir() / d.file_path).stat().st_size if on_disk else -1\n"
+        "        print(f'DOCUMENT:{d.name}:{d.resource_id}:{resource.name if resource else None}:{on_disk}:{size}:{d.current_hash}')\n"
+        "    versions = session.query(DocumentVersion).count()\n"
+        "    print(f'VERSION_COUNT:{versions}')\n"
+        "# Run a second sync in the same process/database to prove idempotency\n"
+        "# (instruction 8) — already-downloaded resources must be skipped, not\n"
+        "# re-downloaded or duplicated.\n"
+        "result2 = run_sync()\n"
+        "print(f'RESULT2_DOCS_DOWNLOADED:{result2.documents_downloaded}')\n"
+        "with SessionLocal() as session:\n"
+        "    print(f'DOCUMENT_COUNT_AFTER_SECOND_SYNC:{session.query(Document).count()}')\n"
+        "    print(f'VERSION_COUNT_AFTER_SECOND_SYNC:{session.query(DocumentVersion).count()}')\n"
     )
     env = dict(os.environ)
     env["ESMERELDA_DATA_DIR"] = tmp_data_dir
@@ -479,13 +532,17 @@ try:
     check("6b. run_sync() produced a real RESULT line", result_line is not None)
     if result_line:
         parts = [int(p) for p in result_line.removeprefix("RESULT:").split(":")]
-        courses_d, courses_p, resources_d, resources_p, assignments_d, assignments_p = parts
+        (
+            courses_d, courses_p, resources_d, resources_p, assignments_d, assignments_p,
+            documents_eligible, documents_downloaded,
+        ) = parts
         check(f"6c. Course discovered AND persisted (discovered={courses_d}, persisted={courses_p})", courses_d == 1 and courses_p == 1)
         check(
-            f"6d. All 3 resources discovered AND persisted (discovered={resources_d}, persisted={resources_p}): "
-            "a normally-visible resource, one inside a CSS-collapsed section (display:none — the real bug this "
-            "step fixed), and one on a separate multi-page course-display section page",
-            resources_d == 3 and resources_p == 3,
+            f"6d. All 4 resources discovered AND persisted (discovered={resources_d}, persisted={resources_p}): "
+            "a normally-visible PDF resource, a direct DOCX file link, one inside a CSS-collapsed section "
+            "(display:none — the real bug this step fixed), and one on a separate multi-page course-display "
+            "section page",
+            resources_d == 4 and resources_p == 4,
         )
         check(
             f"6e. Both assignments discovered AND persisted (discovered={assignments_d}, persisted={assignments_p}): "
@@ -493,6 +550,43 @@ try:
             "fixed — identification now relies on the /mod/assign/ href, a stable Moodle-core signal, not "
             "English wording), and one from an inactive (display:none) Timeline tab-pane",
             assignments_d == 2 and assignments_p == 2,
+        )
+        check(
+            f"6o. 3 resources eligible for document download (Resource/PDF/DOCX types — the Folder resource "
+            f"correctly excluded), 2 real downloads succeeded (eligible={documents_eligible}, "
+            f"downloaded={documents_downloaded}) — this is the previously-entirely-missing pipeline",
+            documents_eligible == 3 and documents_downloaded == 2,
+        )
+
+        document_lines = [l for l in proc.stdout.splitlines() if l.startswith("DOCUMENT:")]
+        version_count_line = next((l for l in proc.stdout.splitlines() if l.startswith("VERSION_COUNT:")), None)
+        check("6p. Exactly 2 real Document rows were created (the PDF and the DOCX — not the failed or ineligible ones)", len(document_lines) == 2)
+        check(
+            "6q. Both documents are linked to their real Resource via resource_id, exist on disk with the exact "
+            "downloaded byte size, and have a real SHA-256 hash recorded",
+            all(
+                parts[1] != "None" and parts[2] != "None" and parts[3] == "True" and int(parts[4]) > 0 and len(parts[5]) == 64
+                for line in document_lines
+                for parts in [line.removeprefix("DOCUMENT:").split(":")]
+            ),
+        )
+        check(
+            "6r. One DocumentVersion was created for each of the 2 real documents",
+            version_count_line == "VERSION_COUNT:2",
+        )
+
+        second_downloaded_line = next((l for l in proc.stdout.splitlines() if l.startswith("RESULT2_DOCS_DOWNLOADED:")), None)
+        doc_count_after_line = next((l for l in proc.stdout.splitlines() if l.startswith("DOCUMENT_COUNT_AFTER_SECOND_SYNC:")), None)
+        version_count_after_line = next((l for l in proc.stdout.splitlines() if l.startswith("VERSION_COUNT_AFTER_SECOND_SYNC:")), None)
+        check(
+            "6s. Idempotency (instruction 8): a second sync in the same run downloads 0 NEW documents — "
+            "already-downloaded resources are skipped, not re-fetched or duplicated",
+            second_downloaded_line == "RESULT2_DOCS_DOWNLOADED:0",
+        )
+        check(
+            "6t. Document/DocumentVersion counts are unchanged after the second sync — no duplicates created",
+            doc_count_after_line == "DOCUMENT_COUNT_AFTER_SECOND_SYNC:2"
+            and version_count_after_line == "VERSION_COUNT_AFTER_SECOND_SYNC:2",
         )
 
     # logging.basicConfig()'s default stream is stderr, not stdout — only the
@@ -529,10 +623,10 @@ try:
         "6g. The explicit 'Moodle sync summary' line has the exact requested field names",
         "courses_discovered=1" in combined_output
         and "assignments_discovered=2" in combined_output
-        and "resources_discovered=3" in combined_output
+        and "resources_discovered=4" in combined_output
         and "courses_persisted=1" in combined_output
         and "assignments_persisted=2" in combined_output
-        and "resources_persisted=3" in combined_output,
+        and "resources_persisted=4" in combined_output,
     )
     check(
         "6h. Neither the real username nor password appears anywhere in the subprocess's stdout/stderr",
@@ -573,6 +667,23 @@ try:
         and "text=" in combined_output
         and "href=" in combined_output
         and "parent_text=" in combined_output,
+    )
+    check(
+        "6u. All requested document-pipeline log stages are present: eligible, attempted, succeeded, "
+        "skipped (on the second, idempotent sync), failed, and a final summary with documents/versions created",
+        "documents eligible for download" in combined_output
+        and "document download attempted" in combined_output
+        and "document download succeeded" in combined_output
+        and "document download skipped (already downloaded)" in combined_output
+        and "document download failed" in combined_output
+        and "document sync summary:" in combined_output
+        and "documents_created=2" in combined_output
+        and "versions_created=2" in combined_output,
+    )
+    check(
+        "6v. The document-download step ran without breaking the already-working course/assignment/resource "
+        "sync — the exact same summary counts from checks 6c/6d/6e still appear after this step ran",
+        "Moodle sync summary: courses_discovered=1 assignments_discovered=2 resources_discovered=4" in combined_output,
     )
 
     full_httpd.shutdown()

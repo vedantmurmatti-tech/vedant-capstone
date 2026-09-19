@@ -5,10 +5,14 @@ __pycache__/
 tests/
 
 # Local-only, interactive Moodle/Playwright automation — not part of the
-# deployed API. moodle/sync_service.py (used by POST /api/sync/moodle) is
-# NOT excluded — the rest of moodle/ (the manual-login tools) is.
+# deployed API. moodle/sync_service.py (used by POST /api/sync/moodle) and
+# moodle/document_downloader.py (its sync_resource_documents() is called
+# from sync_service.py's run_sync() — see BUILD_LOG.md) are NOT excluded.
+# moodle/browser.py is still excluded — it's the manual, interactive-login
+# script's own helper, never imported at module level by
+# document_downloader.py (only lazily inside its main(), the manual
+# script's own entry point) specifically so its absence here is safe.
 moodle/browser.py
-moodle/document_downloader.py
 moodle/browser_profile/
 moodle/__pycache__/
 content_radar.py
