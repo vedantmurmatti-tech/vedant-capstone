@@ -143,7 +143,9 @@ def save_document(
     name: str,
     file_path: str,
     file_hash: str,
-    resource_id: int | None = None
+    resource_id: int | None = None,
+    file_type: str | None = None,
+    extracted_text: str | None = None,
 ):
     with SessionLocal() as session:
         document = session.query(Document).filter(
@@ -154,8 +156,10 @@ def save_document(
             document = Document(
                 name=name,
                 file_path=file_path,
+                file_type=file_type,
                 current_hash=file_hash,
-                resource_id=resource_id
+                resource_id=resource_id,
+                extracted_text=extracted_text,
             )
 
             session.add(document)
@@ -171,9 +175,12 @@ def save_document(
 
         elif document.current_hash != file_hash:
             document.current_hash = file_hash
+            document.extracted_text = extracted_text
 
             if resource_id is not None:
                 document.resource_id = resource_id
+            if file_type is not None:
+                document.file_type = file_type
 
             version = DocumentVersion(
                 document_id=document.id,

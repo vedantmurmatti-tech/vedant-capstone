@@ -23,6 +23,7 @@ from storage.database import SessionLocal
 from storage.models import Resource
 from storage.crud import save_document
 from storage.paths import get_documents_dir
+from storage.text_extraction import extract_text, guess_extractable_type
 
 
 DOCUMENTS_DIR = get_documents_dir()
@@ -352,6 +353,27 @@ def process_resource(page, resource):
 
     file_hash = calculate_file_hash(destination)
 
+    # Knowledge Base indexing: extract plain text from the just-downloaded
+    # file (one document at a time — see storage/text_extraction.py's own
+    # docstring for why this preserves the memory discipline established
+    # for downloading itself). Eligibility is derived from the real
+    # downloaded file's own extension, NOT resource.resource_type —
+    # a generic /mod/resource/view.php wrapper page (the overwhelming
+    # majority of real Moodle PDFs/DOCX/PPTX) is classified "Resource" by
+    # moodle/sync_service.py's resource-type classifier, which has nothing
+    # to do with what kind of file it actually resolves to once
+    # downloaded (see storage/text_extraction.py's guess_extractable_type()
+    # docstring — this was a real bug, caught by testing against a real
+    # downloaded file, not assumed). None for unsupported types or a
+    # failed extraction — logged there, not raised; a document that can't
+    # be indexed is still a real, valid download.
+    extractable_type = guess_extractable_type(destination.name)
+    extracted_text = extract_text(destination, extractable_type)
+    logger.info(
+        "document indexed: resource_id=%d name=%r extractable=%s text_chars=%d",
+        resource.id, resource.name, extracted_text is not None, len(extracted_text or ""),
+    )
+
     # Store a filename relative to DOCUMENTS_DIR, not an absolute path —
     # portable across machines/environments. See storage/paths.py, which
     # both this downloader and the /api/documents/{id}/download route
@@ -360,7 +382,9 @@ def process_resource(page, resource):
         name=destination.name,
         file_path=destination.name,
         file_hash=file_hash,
-        resource_id=resource.id
+        resource_id=resource.id,
+        file_type=extractable_type or resource.resource_type,
+        extracted_text=extracted_text,
     )
 
     print("Document metadata saved.")

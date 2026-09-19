@@ -1128,26 +1128,50 @@ def run_sync(run_id: int | None = None) -> SyncResult:
                         should_probe_multi_page = False
                 result.courses_synced = len(result.course_names)
 
-                if active_courses:
-                    result.assignments_discovered, result.assignments_synced = _sync_course_assignments(
-                        page, active_courses, moodle_url
-                    )
-
-                # Downloads the actual file for each already-persisted, downloadable
-                # Resource (PDF/DOCX/PPTX/XLSX/ZIP/etc., or a /mod/resource/ wrapper
-                # page that resolves to one) and creates the matching Document/
-                # DocumentVersion rows — see moodle/document_downloader.py's
-                # sync_resource_documents() and BUILD_LOG.md for why this step was
-                # previously entirely missing from the automated sync (Resource rows
-                # were being persisted, but nothing ever downloaded their files).
-                # Wrapped so a document-download problem never aborts the
-                # already-successful course/assignment/resource sync above it.
+                # Pipeline order: course/resource sync -> document sync ->
+                # assignment sync -> persistence/summary (see BUILD_LOG.md).
+                # Document sync runs BEFORE assignment sync here deliberately.
+                # Verified directly, not assumed, that this is safe:
+                # moodle/document_downloader.py's sync_resource_documents()
+                # (via _stream_resource_to_disk()) never calls page.goto() at
+                # all — it only reads the already-authenticated context's
+                # cookies (page.context.cookies(url), read-only) and performs
+                # its actual file download over a completely separate
+                # urllib.request connection, entirely outside Playwright's
+                # own page/network stack. It cannot change what page.url is,
+                # what's in the DOM, or the session's validity — so running it
+                # before _sync_course_assignments() (which does its own fresh,
+                # absolute page.goto(dashboard_url) regardless of whatever
+                # page.url was beforehand) cannot affect assignment discovery.
                 try:
                     document_counts = sync_resource_documents(page)
                     result.documents_eligible = document_counts.eligible
                     result.documents_downloaded = document_counts.succeeded
                 except Exception as exc:
                     logger.exception("[SYNC DEBUG] document sync failed unexpectedly: %s: %s", type(exc).__name__, exc)
+
+                # Explicit call-site logging (distinct from _sync_course_assignments()'s
+                # own internal logging) so a production run can show, unambiguously,
+                # whether this call was even reached and what it returned — added
+                # specifically to debug a real "assignments_discovered=0" regression;
+                # see BUILD_LOG.md.
+                logger.info(
+                    "[SYNC DEBUG] about to call _sync_course_assignments: active_courses_count=%d",
+                    len(active_courses),
+                )
+                if active_courses:
+                    result.assignments_discovered, result.assignments_synced = _sync_course_assignments(
+                        page, active_courses, moodle_url
+                    )
+                else:
+                    logger.warning(
+                        "[SYNC DEBUG] _sync_course_assignments NOT called: active_courses is empty"
+                    )
+                logger.info(
+                    "[SYNC DEBUG] returned from _sync_course_assignments: "
+                    "assignments_discovered=%d assignments_persisted=%d",
+                    result.assignments_discovered, result.assignments_synced,
+                )
 
                 logger.info("[SYNC DEBUG] database commit completed")
                 logger.info(
