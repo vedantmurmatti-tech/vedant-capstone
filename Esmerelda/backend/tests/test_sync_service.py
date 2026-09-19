@@ -305,6 +305,7 @@ except Exception as exc:
 # effect.
 _COURSE_NAME = "TEST101 Full Pipeline Test Course"
 _ASSIGNMENT_NAME = "Full Pipeline Test Assignment"
+_TABBED_ASSIGNMENT_NAME = "Overdue Tab Test Assignment"
 
 _FULL_DASHBOARD_HTML = f"""
 <html><body>
@@ -315,14 +316,37 @@ _FULL_DASHBOARD_HTML = f"""
 </body></html>
 """
 
+# Reconstructed from Moodle's real core_calendar Timeline block template
+# shape, not the "<name> is due" convention a previous version of this
+# fixture (and the code under test) both wrongly assumed — see
+# BUILD_LOG.md's root-cause entry. Two real-world details this fixture
+# specifically exercises:
+#  1. The event-name link's own text is just the activity title — no "is
+#     due" phrase anywhere in the anchor itself; the due date/time is
+#     separate, non-link text nearby.
+#  2. Moodle's Timeline groups events into date-range tabs ("Overdue",
+#     "Next 7 days", etc.) implemented as Bootstrap tab-panes — only the
+#     active tab's pane lacks `display:none`. The first assignment here
+#     sits in the active tab; the second sits in an inactive
+#     (`display:none`) one, exactly mirroring the already-proven
+#     collapsed-course-section resource bug fixed earlier this project.
 _FULL_MY_PAGE_HTML = f"""
 <html><body>
 <div class="usermenu"><a href="/login/logout.php?sesskey=x">Log out</a></div>
 <section class="block_timeline">
-  <div>
-    <div><a href="/course/view.php?id=101">{_COURSE_NAME}</a></div>
-    <p>Friday, 20 September 2026 11:59</p>
-    <div><a href="/mod/assign/view.php?id=555">{_ASSIGNMENT_NAME} is due</a></div>
+  <div class="tab-pane active" id="tab-next7days">
+    <div class="event-name-container">
+      <div><a href="/course/view.php?id=101">{_COURSE_NAME}</a></div>
+      <small class="text-muted">Friday, 20 September 2026 11:59</small>
+      <div><a href="/mod/assign/view.php?id=555" class="font-weight-bold">{_ASSIGNMENT_NAME}</a></div>
+    </div>
+  </div>
+  <div class="tab-pane" id="tab-overdue" style="display:none;">
+    <div class="event-name-container">
+      <div><a href="/course/view.php?id=101">{_COURSE_NAME}</a></div>
+      <small class="text-muted">Monday, 15 September 2026 09:00</small>
+      <div><a href="/mod/assign/view.php?id=556" class="font-weight-bold">{_TABBED_ASSIGNMENT_NAME}</a></div>
+    </div>
   </div>
 </section>
 </body></html>
@@ -464,9 +488,11 @@ try:
             resources_d == 3 and resources_p == 3,
         )
         check(
-            f"6e. Assignment discovered AND persisted (discovered={assignments_d}, persisted={assignments_p}) — "
-            "this is the exact scenario the relative-dashboard-URL bug silently zeroed out",
-            assignments_d == 1 and assignments_p == 1,
+            f"6e. Both assignments discovered AND persisted (discovered={assignments_d}, persisted={assignments_p}): "
+            "one from a visible Timeline tab whose link text has no 'is due' phrase (the real bug this step "
+            "fixed — identification now relies on the /mod/assign/ href, a stable Moodle-core signal, not "
+            "English wording), and one from an inactive (display:none) Timeline tab-pane",
+            assignments_d == 2 and assignments_p == 2,
         )
 
     # logging.basicConfig()'s default stream is stderr, not stdout — only the
@@ -502,10 +528,10 @@ try:
     check(
         "6g. The explicit 'Moodle sync summary' line has the exact requested field names",
         "courses_discovered=1" in combined_output
-        and "assignments_discovered=1" in combined_output
+        and "assignments_discovered=2" in combined_output
         and "resources_discovered=3" in combined_output
         and "courses_persisted=1" in combined_output
-        and "assignments_persisted=1" in combined_output
+        and "assignments_persisted=2" in combined_output
         and "resources_persisted=3" in combined_output,
     )
     check(
@@ -530,6 +556,23 @@ try:
         and _classify_resource_type("https://x/mod/url/view.php?id=1") == "Link"
         and _classify_resource_type("https://x/mod/folder/view.php?id=1") == "Folder"
         and _classify_resource_type("https://x/file.pdf") == "PDF",
+    )
+    check(
+        "6l. The assignment whose link text has NO 'is due' phrase is discovered by name — "
+        "proves identification no longer depends on that English phrase being present",
+        _ASSIGNMENT_NAME in combined_output,
+    )
+    check(
+        "6m. The assignment sitting in an inactive (display:none) Timeline tab-pane is ALSO discovered — "
+        "proves the is_visible() filter removal, not just the href-based identification fix",
+        _TABBED_ASSIGNMENT_NAME in combined_output,
+    )
+    check(
+        "6n. Every logged Timeline candidate includes real, useful diagnostic fields, not just a count",
+        "Timeline candidate 0/" in combined_output
+        and "text=" in combined_output
+        and "href=" in combined_output
+        and "parent_text=" in combined_output,
     )
 
     full_httpd.shutdown()
