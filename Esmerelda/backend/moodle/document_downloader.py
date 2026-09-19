@@ -1,6 +1,7 @@
 
 import gc
 import logging
+import os
 import socket
 import time
 import urllib.error
@@ -118,6 +119,48 @@ class DocumentSyncCounts:
     versions_created: int = 0
 
 
+# TEMPORARY safety limit (see BUILD_LOG.md) — bounds how many eligible
+# resources are downloaded/processed in a single sync run. Applies only
+# to this document-download stage: course discovery, assignment
+# discovery, and resource *metadata* syncing (moodle/sync_service.py)
+# are completely unaffected — they still discover and persist every
+# real resource/assignment/course found, exactly as before. This exists
+# to bound how much a single sync can do (download time, bandwidth, disk
+# use) while the rest of the pipeline is exercised against a real Moodle
+# account, not because downloading more is unsafe on its own — the
+# existing streaming/timeout/size-limit/extraction safeguards
+# (_stream_resource_to_disk(), storage/text_extraction.py) are completely
+# unchanged and still apply to every resource that IS downloaded.
+#
+# 0 explicitly means unlimited (every eligible resource is attempted,
+# the pre-existing behavior) — never treated as "download nothing."
+_DEFAULT_MAX_DOCUMENT_DOWNLOADS_PER_SYNC = 3
+
+
+def _get_max_document_downloads_per_sync() -> int:
+    """Re-read on every call (not cached at import time), matching the
+    same pattern storage/crud.py's _get_stale_sync_run_minutes() already
+    uses for its own configurable env var — so a changed environment
+    variable takes effect without a process restart. Falls back safely
+    to the default on a missing or non-numeric value; a negative value
+    is also rejected (only 0 means unlimited, not "less than zero")."""
+    raw = os.environ.get("ESMERELDA_MAX_DOCUMENT_DOWNLOADS_PER_SYNC")
+    if not raw:
+        return _DEFAULT_MAX_DOCUMENT_DOWNLOADS_PER_SYNC
+    try:
+        value = int(raw)
+        if value < 0:
+            raise ValueError("must be 0 (unlimited) or a positive integer")
+        return value
+    except ValueError:
+        logger.warning(
+            "ESMERELDA_MAX_DOCUMENT_DOWNLOADS_PER_SYNC=%r is not a valid non-negative integer — falling "
+            "back to the default of %d",
+            raw, _DEFAULT_MAX_DOCUMENT_DOWNLOADS_PER_SYNC,
+        )
+        return _DEFAULT_MAX_DOCUMENT_DOWNLOADS_PER_SYNC
+
+
 def sync_resource_documents(page) -> DocumentSyncCounts:
     """The automated entry point — called from moodle/sync_service.py's
     run_sync() using the same already-authenticated Playwright `page` the
@@ -152,6 +195,22 @@ def sync_resource_documents(page) -> DocumentSyncCounts:
     counts.eligible = len(resources)
     logger.info("documents eligible=%d", counts.eligible)
 
+    limit = _get_max_document_downloads_per_sync()
+    logger.info("document download limit=%s", limit if limit > 0 else "unlimited")
+    if limit > 0 and len(resources) > limit:
+        skipped_resources = resources[limit:]
+        resources = resources[:limit]
+        counts.skipped = len(skipped_resources)
+        logger.info(
+            "document download limit reached: %d eligible, %d selected for this sync, %d skipped "
+            "(resource_ids=%s)",
+            counts.eligible, len(resources), counts.skipped, [r.id for r in skipped_resources],
+        )
+    logger.info(
+        "documents selected for download this sync=%d (resource_ids=%s)",
+        len(resources), [r.id for r in resources],
+    )
+
     for index, resource in enumerate(resources, start=1):
         # Every eligible resource is (re-)downloaded on every full sync —
         # local file existence/state is never a reason to skip. Render's
@@ -165,7 +224,7 @@ def sync_resource_documents(page) -> DocumentSyncCounts:
         counts.attempted += 1
         logger.info(
             "document download %d/%d: resource_id=%d name=%r type=%s",
-            index, counts.eligible, resource.id, resource.name, resource.resource_type,
+            index, len(resources), resource.id, resource.name, resource.resource_type,
         )
 
         with SessionLocal() as session:
@@ -178,7 +237,7 @@ def sync_resource_documents(page) -> DocumentSyncCounts:
         except Exception as exc:
             logger.warning(
                 "document download %d/%d FAILED: resource_id=%d name=%r: %s: %s",
-                index, counts.eligible, resource.id, resource.name, type(exc).__name__, exc,
+                index, len(resources), resource.id, resource.name, type(exc).__name__, exc,
             )
         finally:
             # Instruction 7: after every document, release any temporary
@@ -206,13 +265,13 @@ def sync_resource_documents(page) -> DocumentSyncCounts:
             logger.info(
                 "document download %d/%d succeeded: resource_id=%d name=%r "
                 "(documents created=%d, versions created=%d)",
-                index, counts.eligible, resource.id, resource.name, new_documents, new_versions,
+                index, len(resources), resource.id, resource.name, new_documents, new_versions,
             )
         else:
             counts.failed += 1
             logger.warning(
                 "document download %d/%d failed (no file found or save error): resource_id=%d name=%r",
-                index, counts.eligible, resource.id, resource.name,
+                index, len(resources), resource.id, resource.name,
             )
 
     logger.info(
