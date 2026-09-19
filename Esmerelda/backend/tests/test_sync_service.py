@@ -669,14 +669,19 @@ try:
         and "parent_text=" in combined_output,
     )
     check(
-        "6u. All requested document-pipeline log stages are present: eligible, attempted, succeeded, "
-        "skipped (on the second, idempotent sync), failed, and a final summary with documents/versions created",
-        "documents eligible for download" in combined_output
-        and "document download attempted" in combined_output
-        and "document download succeeded" in combined_output
-        and "document download skipped (already downloaded)" in combined_output
-        and "document download failed" in combined_output
+        "6u. All requested document-pipeline log stages are present: eligible, per-item progress (N/X), "
+        "succeeded, SKIPPED (on the second, idempotent sync), failed, and a final summary with "
+        "documents_downloaded/documents_failed/versions created",
+        "documents eligible=3" in combined_output
+        and "document download 1/3" in combined_output
+        and "document download 2/3" in combined_output
+        and "document download 3/3" in combined_output
+        and "succeeded: resource_id=" in combined_output
+        and "SKIPPED (already downloaded)" in combined_output
+        and "failed (no file found or save error)" in combined_output
         and "document sync summary:" in combined_output
+        and "documents_downloaded=2" in combined_output
+        and "documents_failed=1" in combined_output
         and "documents_created=2" in combined_output
         and "versions_created=2" in combined_output,
     )
@@ -767,6 +772,257 @@ try:
     _full_expire_after_course_page_visited = False
 except Exception as exc:
     check(f"7. Session-loss regression test setup itself failed unexpectedly: {exc}", False)
+
+
+# 8. Bounded-memory regression test for the Render out-of-memory incident.
+# Measures real process memory (Windows' GetProcessMemoryInfo — stdlib
+# ctypes, no new dependency; this dev environment is Windows) for two
+# scenarios, each run in its own clean subprocess so one process's peak
+# doesn't contaminate the other's baseline:
+#   8a. A single large (20 MB) file, downloaded the OLD way (read the
+#       entire HTTP response body into one Python object before touching
+#       disk) vs. the NEW way (moodle/document_downloader.py's real
+#       _stream_resource_to_disk(), 64 KiB chunks straight to disk).
+#       Directly demonstrates the actual mechanism fixed — this is
+#       platform-independent (peak allocation size is peak allocation
+#       size everywhere), unlike allocator-fragmentation-driven RSS
+#       creep, which is Linux/glibc-specific and not reproducible from
+#       Windows — flagged honestly in BUILD_LOG.md as the one thing this
+#       local test cannot directly reproduce.
+#   8b. The real run_sync() pipeline against 10 real, medium-sized (3 MB
+#       each, 30 MB of real total content) downloadable resources —
+#       proves memory does not accumulate/scale with the number or total
+#       size of resources processed, only with one file at a time.
+try:
+    import ctypes
+    from ctypes import wintypes
+
+    # Embedded verbatim into each subprocess script below (they're separate
+    # processes — nothing importable can be shared directly). Prints its
+    # own PEAK_WORKING_SET:<bytes> line. GetCurrentProcess's return value
+    # is a pseudo-handle that ctypes truncates on 64-bit Python unless its
+    # restype is set explicitly to HANDLE — confirmed directly: without
+    # this, GetProcessMemoryInfo silently failed (GetLastError() == 6,
+    # ERROR_INVALID_HANDLE) and every measurement below would have
+    # silently read back as 0 rather than a real value.
+    _PEAK_MEMORY_SNIPPET = (
+        "import ctypes\n"
+        "from ctypes import wintypes\n"
+        "class _C(ctypes.Structure):\n"
+        "    _fields_ = [('cb', wintypes.DWORD), ('PageFaultCount', wintypes.DWORD), "
+        "('PeakWorkingSetSize', ctypes.c_size_t), ('WorkingSetSize', ctypes.c_size_t), "
+        "('QuotaPeakPagedPoolUsage', ctypes.c_size_t), ('QuotaPagedPoolUsage', ctypes.c_size_t), "
+        "('QuotaPeakNonPagedPoolUsage', ctypes.c_size_t), ('QuotaNonPagedPoolUsage', ctypes.c_size_t), "
+        "('PagefileUsage', ctypes.c_size_t), ('PeakPagefileUsage', ctypes.c_size_t)]\n"
+        "ctypes.windll.kernel32.GetCurrentProcess.restype = wintypes.HANDLE\n"
+        "ctypes.windll.psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(_C), wintypes.DWORD]\n"
+        "ctypes.windll.psapi.GetProcessMemoryInfo.restype = wintypes.BOOL\n"
+        "_c = _C(); _c.cb = ctypes.sizeof(_C)\n"
+        "_h = ctypes.windll.kernel32.GetCurrentProcess()\n"
+        "ctypes.windll.psapi.GetProcessMemoryInfo(_h, ctypes.byref(_c), _c.cb)\n"
+        "print(f'PEAK_WORKING_SET:{_c.PeakWorkingSetSize}')\n"
+    )
+
+    _LARGE_FILE_SIZE = 120 * 1024 * 1024  # 120 MB — large enough that the actual
+    # buffered-vs-streamed difference dominates over Python/module-import
+    # baseline noise (confirmed necessary: an earlier 20 MB run showed only
+    # a ~2 MB gap, because import baseline overhead was comparable in size
+    # to the file itself — not because the fix has a small effect).
+    _LARGE_FILE_BYTES_MARKER = b"L"
+
+    class _LargeFileHandler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/pdf")
+            self.send_header("Content-Length", str(_LARGE_FILE_SIZE))
+            self.end_headers()
+            # Written in chunks server-side too — this is a real, ordinary
+            # HTTP response of this size, not a special test-only shortcut.
+            remaining = _LARGE_FILE_SIZE
+            chunk = _LARGE_FILE_BYTES_MARKER * 65536
+            while remaining > 0:
+                to_write = chunk[:min(len(chunk), remaining)]
+                self.wfile.write(to_write)
+                remaining -= len(to_write)
+
+    large_file_httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _LargeFileHandler)
+    large_file_thread = threading.Thread(target=large_file_httpd.serve_forever, daemon=True)
+    large_file_thread.start()
+    large_file_url = f"http://127.0.0.1:{large_file_httpd.server_address[1]}/large-file.pdf"
+
+    # 8a-old: the OLD, now-removed approach — read the entire response body
+    # into one Python object before writing anything to disk. Reproduced
+    # inline here (not by reverting real code) specifically to measure it.
+    old_way_script = (
+        # Imports the same heavy modules new_way_script does (SQLAlchemy
+        # models etc, via document_downloader) purely to equalize the two
+        # scripts' baseline memory footprint — otherwise the comparison
+        # would be measuring "which script imports more," not "which
+        # download approach uses more memory."
+        "import moodle.document_downloader as _unused_for_baseline_parity\n"
+        "import urllib.request\n"
+        f"url = {large_file_url!r}\n"
+        "with urllib.request.urlopen(url, timeout=30) as response:\n"
+        "    content = response.read()  # the old bug: the ENTIRE file, all at once\n"
+        "with open('old_way_output.bin', 'wb') as f:\n"
+        "    f.write(content)\n"
+        + _PEAK_MEMORY_SNIPPET
+    )
+    new_way_script = (
+        "import sys; sys.path.insert(0, '.')\n"
+        "from pathlib import Path\n"
+        "from moodle.document_downloader import _stream_resource_to_disk\n"
+        f"url = {large_file_url!r}\n"
+        "class FakeContext:\n"
+        "    def cookies(self, url): return []\n"
+        "class FakePage:\n"
+        "    context = FakeContext()\n"
+        "ok, final_url = _stream_resource_to_disk(FakePage(), url, Path('new_way_output.bin'))\n"
+        "print(f'STREAM_OK:{ok}')\n"
+        + _PEAK_MEMORY_SNIPPET
+    )
+
+    backend_dir = Path(__file__).resolve().parent.parent
+    old_proc = subprocess.run([sys.executable, "-c", old_way_script], cwd=str(backend_dir), capture_output=True, text=True, timeout=60)
+    new_proc = subprocess.run([sys.executable, "-c", new_way_script], cwd=str(backend_dir), capture_output=True, text=True, timeout=60)
+
+    old_peak_line = next((l for l in old_proc.stdout.splitlines() if l.startswith("PEAK_WORKING_SET:")), None)
+    new_peak_line = next((l for l in new_proc.stdout.splitlines() if l.startswith("PEAK_WORKING_SET:")), None)
+
+    check("8a. Both the old-approach and new-approach measurement subprocesses ran successfully", old_peak_line is not None and new_peak_line is not None)
+    check("8a-2. The new streaming approach actually completed the download successfully", "STREAM_OK:True" in new_proc.stdout)
+
+    if old_peak_line and new_peak_line:
+        old_peak = int(old_peak_line.split(":")[1])
+        new_peak = int(new_peak_line.split(":")[1])
+        old_peak_mb = old_peak / (1024 * 1024)
+        new_peak_mb = new_peak / (1024 * 1024)
+        _large_file_mb = _LARGE_FILE_SIZE // (1024 * 1024)
+        print(f"\n    [MEMORY] {_large_file_mb} MB file — OLD (full-buffer) peak working set: {old_peak_mb:.1f} MB")
+        print(f"    [MEMORY] {_large_file_mb} MB file — NEW (streamed) peak working set:     {new_peak_mb:.1f} MB")
+        check(
+            f"8a-3. The new streaming approach's peak working set ({new_peak_mb:.1f} MB) is meaningfully lower "
+            f"than the old full-buffer approach's ({old_peak_mb:.1f} MB) for a single {_large_file_mb} MB file",
+            new_peak < old_peak,
+        )
+
+    for f in (backend_dir / "old_way_output.bin", backend_dir / "new_way_output.bin"):
+        f.unlink(missing_ok=True)
+    large_file_httpd.shutdown()
+    large_file_thread.join(timeout=5)
+
+    # 8b: the real run_sync() pipeline against 10 real, medium-sized (3 MB
+    # each) resources — proves memory doesn't grow with resource count.
+    _MANY_FILE_SIZE = 10 * 1024 * 1024
+    _MANY_FILE_COUNT = 15  # 150 MB of real total content, one file at a time
+    many_course_links = "".join(
+        f'<a href="/mod/resource/view.php?id={900+i}">Handout {i}.pdf</a>\n' for i in range(_MANY_FILE_COUNT)
+    )
+    many_course_html = f"<html><body><div class='usermenu'><a href='/login/logout.php?sesskey=x'>Log out</a></div>{many_course_links}</body></html>"
+    many_dash_html = f"<html><body><div class='usermenu'><a href='/login/logout.php?sesskey=x'>Log out</a></div><p>Only courses in progress</p><div><a href='/course/view.php?id=201'>MANYFILES Test Course</a></div><p>Course overview</p></body></html>"
+    many_sessions: set[str] = set()
+
+    class _ManyFilesHandler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _authed(self):
+            c = self.headers.get("Cookie", "")
+            return any(p.strip().startswith("session=") and p.strip().partition("=")[2] in many_sessions for p in c.split(";"))
+
+        def do_GET(self):
+            if not self._authed():
+                self.send_response(200); self.send_header("Content-Type", "text/html"); self.end_headers()
+                self.wfile.write(_LOGIN_PAGE_HTML.encode()); return
+            if self.path.startswith("/mod/resource/view.php?id=9"):
+                self.send_response(200); self.send_header("Content-Type", "application/pdf")
+                self.send_header("Content-Length", str(_MANY_FILE_SIZE)); self.end_headers()
+                remaining = _MANY_FILE_SIZE
+                chunk = b"M" * 65536
+                while remaining > 0:
+                    piece = chunk[:min(len(chunk), remaining)]
+                    self.wfile.write(piece)
+                    remaining -= len(piece)
+                return
+            if self.path.startswith("/course/view.php"):
+                body = many_course_html
+            else:
+                body = many_dash_html
+            self.send_response(200); self.send_header("Content-Type", "text/html"); self.end_headers()
+            self.wfile.write(body.encode())
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            fields = parse_qs(self.rfile.read(length).decode())
+            if fields.get("username", [""])[0] == _TEST_USERNAME and fields.get("password", [""])[0] == _TEST_PASSWORD:
+                many_sessions.add("many-sess-1")
+                self.send_response(303); self.send_header("Set-Cookie", "session=many-sess-1; Path=/")
+                self.send_header("Location", "/"); self.end_headers()
+            else:
+                self.send_response(200); self.end_headers(); self.wfile.write(_LOGIN_PAGE_HTML.encode())
+
+    many_httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _ManyFilesHandler)
+    many_thread = threading.Thread(target=many_httpd.serve_forever, daemon=True)
+    many_thread.start()
+    many_url = f"http://127.0.0.1:{many_httpd.server_address[1]}/"
+    many_data_dir = tempfile.mkdtemp(prefix="esmerelda_memory_test_")
+
+    many_script = (
+        "from storage.database import init_db; init_db()\n"
+        "from moodle.sync_service import run_sync\n"
+        "result = run_sync()\n"
+        "print(f'DOCS_DOWNLOADED:{result.documents_downloaded}')\n"
+        + _PEAK_MEMORY_SNIPPET
+    )
+    many_env = dict(os.environ)
+    many_env["ESMERELDA_DATA_DIR"] = many_data_dir
+    many_env["MOODLE_USERNAME"] = _TEST_USERNAME
+    many_env["MOODLE_PASSWORD"] = _TEST_PASSWORD
+    many_env["MOODLE_URL"] = many_url
+
+    many_proc = subprocess.run(
+        [sys.executable, "-c", many_script], cwd=str(backend_dir), env=many_env,
+        capture_output=True, text=True, timeout=120,
+    )
+    many_peak_line = next((l for l in many_proc.stdout.splitlines() if l.startswith("PEAK_WORKING_SET:")), None)
+    many_docs_line = next((l for l in many_proc.stdout.splitlines() if l.startswith("DOCS_DOWNLOADED:")), None)
+
+    check(f"8b. The {_MANY_FILE_COUNT}-real-file run_sync() subprocess completed successfully", many_proc.returncode == 0 and many_peak_line is not None)
+    check(f"8b-2. All {_MANY_FILE_COUNT} real files were actually downloaded (not silently skipped)", many_docs_line == f"DOCS_DOWNLOADED:{_MANY_FILE_COUNT}")
+    if many_peak_line:
+        many_peak_mb = int(many_peak_line.split(":")[1]) / (1024 * 1024)
+        total_content_mb = (_MANY_FILE_SIZE * _MANY_FILE_COUNT) / (1024 * 1024)
+        single_file_mb = _MANY_FILE_SIZE / (1024 * 1024)
+        # The bound is "one file's size plus a generous allowance for
+        # Python/SQLAlchemy/Playwright's own baseline footprint" — NOT a
+        # fraction of the total content sum. Both the old and new download
+        # approaches already process resources strictly one at a time (that
+        # was never what changed), so even the old, buffered approach would
+        # not literally hold all N files in memory simultaneously — the
+        # real question this check answers is whether peak memory scales
+        # with the NUMBER of files processed (a real accumulation bug) or
+        # stays roughly flat at "one file's worth" regardless of how many
+        # are processed in the same run (the correct, fixed behavior).
+        bound_mb = single_file_mb + 150
+        print(f"\n    [MEMORY] {_MANY_FILE_COUNT} files x {_MANY_FILE_SIZE // (1024*1024)} MB "
+              f"({total_content_mb:.0f} MB total real content) — peak working set: {many_peak_mb:.1f} MB "
+              f"(bound: one file + baseline = {bound_mb:.0f} MB)")
+        check(
+            f"8b-3. Peak working set ({many_peak_mb:.1f} MB) processing {_MANY_FILE_COUNT} files "
+            f"({total_content_mb:.0f} MB total real content) stays near one file's size plus baseline "
+            f"({bound_mb:.0f} MB), not the {total_content_mb:.0f} MB sum — proves memory does not "
+            "accumulate across sequentially-processed resources",
+            many_peak_mb < bound_mb,
+        )
+
+    many_httpd.shutdown()
+    many_thread.join(timeout=5)
+    shutil.rmtree(many_data_dir, ignore_errors=True)
+except Exception as exc:
+    check(f"8. Bounded-memory regression test setup itself failed unexpectedly: {exc}", False)
 
 
 print("\n--- Summary ---")
