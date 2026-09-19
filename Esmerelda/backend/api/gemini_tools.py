@@ -66,7 +66,7 @@ def build_tools(db: Session, collector: ToolCollector) -> list[Callable]:
         return {"assignments": results}
 
     def get_course_info(course_query: str) -> dict:
-        """Look up real information about one specific course by name or course code (e.g. "Tangible Interfaces" or "DESG322"). Returns the course's full name, short code, description, and how many assignments/resources are tracked for it. Args: course_query: the course name or code as mentioned by the user."""
+        """Look up real information about one specific course by name or course code (e.g. "Tangible Interfaces" or "DESG322"). Returns the course's full name, short code, description, and how many assignments/resources are tracked for it — COUNTS only, not the assignments themselves. Use get_course_assignments instead when the user wants the actual list of assignments/due dates for a course. Args: course_query: the course name or code as mentioned by the user."""
         courses = queries.fetch_courses(db)
         course = match_course(course_query, courses)
         if course is None:
@@ -88,6 +88,43 @@ def build_tools(db: Session, collector: ToolCollector) -> list[Callable]:
             "tracked_assignment_count": len(assignments),
             "tracked_resource_count": len(resources),
         }
+
+    def get_course_assignments(course_query: str) -> dict:
+        """Look up the REAL tracked assignments for ONE specific course — with their real due dates, urgency, and submission status. Use this — not get_course_info, which only returns a count — whenever the user asks what's due, or what assignments exist, for a named or specific course (e.g. "what are my assignments for DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Learning" or "what's due in Tangible Interfaces"). The course is resolved deterministically from the real database (by Moodle course id, short name, course code, or full name — tolerant of a truncated or partial course name) — never guess a course's assignments from get_upcoming_assignments' cross-course list, which only shows the 8 most urgent overall and may omit a specific course entirely. Args: course_query: the course name, short code, or Moodle course id, exactly as the user mentioned it."""
+        courses = queries.fetch_courses(db)
+        course = match_course(course_query, courses)
+        if course is None:
+            return {
+                "error": f"No course found matching '{course_query}'.",
+                "available_courses": [c.name for c in courses],
+            }
+
+        collector.courses[course.id] = queries.course_out(course)
+        assignments = queries.fetch_course_assignments(db, course.id)
+        if not assignments:
+            return {
+                "course": course.name,
+                "assignments": [],
+                "note": "No assignments are currently tracked for this course in the database.",
+            }
+
+        actions = plan_actions(assignments)
+        collector.sources.append(ChatSourceOut(label="Assignment Timeline", courseName=course.name))
+
+        results = []
+        for action in actions:
+            out = queries.assignment_out(action.assignment, course)
+            collector.assignments[out.id] = out
+            results.append(
+                {
+                    "name": action.assignment.name,
+                    "due_date": action.assignment.due_date.isoformat() if action.assignment.due_date else None,
+                    "urgency": action.urgency,
+                    "recommendation": action.recommendation,
+                    "submission_status": action.assignment.submission_status,
+                }
+            )
+        return {"course": course.name, "assignments": results}
 
     def get_course_documents(course_query: str) -> dict:
         """Look up real indexed documents (files downloaded from Moodle) for a specific course, or pass an empty string to get the most recently indexed documents across all courses. Args: course_query: the course name or code, or "" for all courses."""
@@ -216,6 +253,7 @@ def build_tools(db: Session, collector: ToolCollector) -> list[Callable]:
     return [
         get_upcoming_assignments,
         get_course_info,
+        get_course_assignments,
         get_course_documents,
         search_document_content,
         plan_assignment_action,
