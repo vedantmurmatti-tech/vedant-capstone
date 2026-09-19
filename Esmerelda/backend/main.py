@@ -5,9 +5,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from api.routes import router as api_router
 from storage.database import init_db
+from storage.paths import get_data_dir
 
 # Without this, every logger.info() call in this app (main.py's own
 # startup logs, api/routes.py's "esmerelda.sync", moodle/sync_service.py's
@@ -66,13 +68,39 @@ def _find_sync_routes(app: FastAPI) -> list[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # A fresh Railway Volume (or any ESMERELDA_DATA_DIR pointed at an
-    # empty directory) has no esmerelda.db and no tables yet — without
+    # A fresh Render Persistent Disk (or any ESMERELDA_DATA_DIR pointed at
+    # an empty directory) has no esmerelda.db and no tables yet — without
     # this, every query would fail with "no such table" on first deploy.
     # create_all() only creates tables that don't already exist, so this
     # is a no-op against the existing local dev database and safe to run
     # on every startup, not just the first one.
     init_db()
+
+    # Logs where the database and downloaded documents actually live on
+    # every startup — no secrets, just a path and a boolean. This matters
+    # specifically because storage/paths.py's get_data_dir() silently
+    # falls back to a path inside the container's own filesystem
+    # (BACKEND_DIR / "storage") whenever ESMERELDA_DATA_DIR is unset, and
+    # most container platforms (Render included) do NOT persist that
+    # filesystem across restarts/redeploys by default — a fresh deploy
+    # would silently start from an empty database with no downloaded
+    # documents, and nothing before this line would ever announce that
+    # was happening. This has been a recurring, explicitly-flagged
+    # unknown in this project (see BUILD_LOG.md's several "not verified
+    # against Render" notes) — this makes it directly checkable from the
+    # deployed instance's own startup logs instead of only guessed at.
+    _data_dir = get_data_dir()
+    _using_ephemeral_fallback = "ESMERELDA_DATA_DIR" not in os.environ
+    if _using_ephemeral_fallback:
+        logger.warning(
+            "[STARTUP] ESMERELDA_DATA_DIR is not set — the database and downloaded documents live at "
+            "%s, inside this container's own filesystem. On most container platforms (Render included) "
+            "this is wiped on every restart or redeploy. Set ESMERELDA_DATA_DIR to a mounted persistent "
+            "disk's path for data to survive across deploys.",
+            _data_dir,
+        )
+    else:
+        logger.info("[STARTUP] ESMERELDA_DATA_DIR is set — database/documents resolve under %s", _data_dir)
 
     # TEMPORARY diagnostic logging (see BUILD_LOG.md) — a clearly visible,
     # unique-per-build marker so it's possible to confirm from a running
@@ -98,7 +126,7 @@ app = FastAPI(title="Esmerelda API", lifespan=lifespan)
 # Local dev: the Vite frontend runs on a variable localhost port (5173 by
 # default, but shifts up if that port is busy) — always allowed.
 #
-# Production: the deployed frontend's real origin (e.g. a Railway/static
+# Production: the deployed frontend's real origin (e.g. a Render/static
 # host URL) is supplied via FRONTEND_ORIGIN rather than hardcoded, since
 # it isn't known yet and shouldn't require an app code change once it is.
 # Unset in local dev — only localhost is allowed then, unchanged behavior.
@@ -127,6 +155,26 @@ def root():
 
 @app.get("/health")
 def health():
+    # Genuinely checks the database is reachable, not just "the process is
+    # up" — a bare "always ok" health check would let Render keep routing
+    # traffic to (and never restart) an instance whose database file has
+    # become unreadable (e.g. a permissions problem on a newly-attached
+    # Persistent Disk, or a corrupted file), silently turning every real
+    # request into a 500 while the health check itself stays green. No
+    # secret can appear in a database connectivity error — this project's
+    # database never contains connection credentials (SQLite is a local
+    # file, not a network service with its own auth).
+    from sqlalchemy import text
+    from storage.database import engine
+
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "error", "detail": f"Database is not reachable: {exc}"},
+        )
     return {
         "status": "ok"
     }

@@ -1,6 +1,9 @@
 
 import gc
 import logging
+import socket
+import time
+import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +25,7 @@ from storage.models import Resource, Document, DocumentVersion
 from storage.database import SessionLocal
 from storage.models import Resource
 from storage.crud import save_document
-from storage.paths import get_documents_dir, resolve_document_path
+from storage.paths import get_documents_dir
 from storage.text_extraction import extract_text, guess_extractable_type
 
 
@@ -150,28 +153,19 @@ def sync_resource_documents(page) -> DocumentSyncCounts:
     logger.info("documents eligible=%d", counts.eligible)
 
     for index, resource in enumerate(resources, start=1):
-        # Checks whether resource already has a valid, current download —
-        # a Document row existing is NOT sufficient on its own: the
-        # referenced file must still genuinely be on disk (see
-        # _existing_document_status()'s docstring — a real gap this fix
-        # closes, since Render's ephemeral filesystem can wipe local files
-        # a database row still remembers, see BUILD_LOG.md), its hash must
-        # still match (not corrupted), and a cheap HEAD-only check must
-        # not show a different size on Moodle now (best-effort "resource
-        # updated" detection, no full re-download needed to check it).
-        status, _existing_document = _existing_document_status(page, resource)
-        if status == "already_downloaded":
-            counts.skipped += 1
-            logger.info(
-                "document download skipped: resource_id=%d name=%r reason=already_downloaded",
-                resource.id, resource.name,
-            )
-            continue
-
+        # Every eligible resource is (re-)downloaded on every full sync —
+        # local file existence/state is never a reason to skip. Render's
+        # container filesystem is ephemeral (may be wiped by a restart or
+        # redeploy at any time, with no notice), so "there's already a
+        # Document row / a file on disk from a previous sync" tells us
+        # nothing reliable about whether that file still exists right now.
+        # Deduplication of DATABASE records (not downloads) is still
+        # handled correctly — save_document() upserts by file_path, so
+        # repeating a download never creates a duplicate Document row.
         counts.attempted += 1
         logger.info(
-            "document download %d/%d: resource_id=%d name=%r type=%s reason=%s",
-            index, counts.eligible, resource.id, resource.name, resource.resource_type, status,
+            "document download %d/%d: resource_id=%d name=%r type=%s",
+            index, counts.eligible, resource.id, resource.name, resource.resource_type,
         )
 
         with SessionLocal() as session:
@@ -243,6 +237,44 @@ def get_filename_from_url(url: str, fallback_name: str) -> str:
 
 _DOWNLOAD_CHUNK_SIZE = 65536  # 64 KiB — the only file-content buffer ever held in memory at once.
 
+# A single socket-level timeout (seconds) applied by urllib to every
+# individual blocking operation on the connection — opening it, and each
+# subsequent .read() call. urllib.request only exposes one timeout knob
+# per socket op (there is no separate "connect timeout" vs. "read
+# timeout" without dropping to http.client directly), so this bounds
+# both: a stalled connect attempt and a stalled read each raise
+# socket.timeout after this many seconds rather than blocking forever.
+_SOCKET_TIMEOUT_SECONDS = 30
+
+# The real fix for "downloads getting stuck for minutes" even though each
+# individual read has a timeout: a slow-but-not-stalled connection can
+# keep trickling a byte or two per _SOCKET_TIMEOUT_SECONDS window
+# indefinitely, never triggering socket.timeout, while still taking
+# effectively forever overall. This is a wall-clock ceiling on the WHOLE
+# download, tracked with time.monotonic() (immune to system clock
+# changes) and checked every chunk.
+_TOTAL_DOWNLOAD_DEADLINE_SECONDS = 300
+
+# Enforced against the real bytes actually read, chunk by chunk — not just
+# a Content-Length header, which can be absent, wrong, or (in principle)
+# lied about by a compromised/misconfigured server. Sized generously
+# above any real course PDF/DOCX/PPTX/ZIP this project has seen, while
+# still bounding worst-case memory-adjacent disk usage and download time
+# for one file.
+_MAX_DOWNLOAD_BYTES = 300 * 1024 * 1024  # 300 MiB
+
+_PROGRESS_LOG_INTERVAL_SECONDS = 5
+
+
+class _DownloadError(Exception):
+    """Carries a stable `reason` code so failures can be classified in
+    logs (timeout / http_error / connection_error / invalid_content /
+    size_limit_exceeded) instead of only a free-text message."""
+
+    def __init__(self, reason: str, message: str):
+        super().__init__(message)
+        self.reason = reason
+
 
 def _stream_resource_to_disk(page, url: str, destination: Path) -> tuple[bool, str | None]:
     """Downloads `url` straight to `destination` on disk, one 64 KiB
@@ -253,153 +285,129 @@ def _stream_resource_to_disk(page, url: str, destination: Path) -> tuple[bool, s
     (e.g. .../pluginfile.php/.../Lecture%20Notes.pdf), the same way the
     previous version did.
 
-    Replaces the previous two-function design (inspect_resource() +
-    download_file(), both removed — see BUILD_LOG.md) that called
-    Playwright's `page.context.request.get(url).body()`, which reads the
-    ENTIRE HTTP response into a single Python `bytes` object before any
-    of it is even inspected, let alone written to disk. That was the
-    actual, confirmed cause of this project's Render out-of-memory
-    regression: with resources processed one at a time (already true
-    before and unchanged here — see sync_resource_documents()), peak
-    memory per download scaled with the size of that one file, and large
-    files (a lecture recording, a course ZIP, etc.) could push a
-    512 MB container over its limit on their own, on top of the headless
-    Chromium subprocess Render's memory limit also has to cover.
-
     Uses Python's built-in `urllib.request` rather than Playwright's own
     request API specifically because Playwright's synchronous Python
     bindings have no way to stream a response body to disk — `.body()`
     is the only way to read it, and it always reads everything at once.
-    `urllib` is standard library — no new dependency. Authentication is
+    `urllib` is standard library — no new dependency, and its blocking
+    calls are real, synchronous, socket-level operations: a timeout here
+    raises in this same thread/call stack rather than requiring — or
+    leaving behind — any background thread or process. Authentication is
     preserved by copying the already-authenticated Playwright browser
-    context's real session cookies (see BUILD_LOG.md's earlier entries
-    for why the automated pipeline's login happens once, in
-    moodle/sync_service.py, and this function must reuse that same
-    session rather than starting a new one) onto the plain HTTP request
-    via a `Cookie` header — no second login, no new browser page/context.
-    Content-Type is available from the response headers as soon as the
-    connection is made, before reading any body bytes at all — so an
-    HTML (non-file) response is detected and the connection closed
-    without ever writing a byte to disk, which is also strictly less
-    work than the previous version (which downloaded the *entire* HTML
-    page's body just to discover it wasn't a file)."""
+    context's real session cookies onto the plain HTTP request via a
+    `Cookie` header — no second login, no new browser page/context.
+    Redirects (Moodle routes most files through a pluginfile.php
+    redirect) are followed automatically by urllib's default opener.
+
+    Every failure mode below is caught, classified, and logged, and
+    always leaves no partial file behind and no dangling connection or
+    thread — this function either returns cleanly or the exception it
+    raised has already been fully handled by the time it returns."""
+    start = time.monotonic()
+    bytes_downloaded = 0
+    last_log = start
+
     try:
         cookie_header = "; ".join(f"{c['name']}={c['value']}" for c in page.context.cookies(url))
     except Exception:
         cookie_header = ""
 
     request = urllib.request.Request(url, headers={"Cookie": cookie_header} if cookie_header else {})
+
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        try:
+            response = urllib.request.urlopen(request, timeout=_SOCKET_TIMEOUT_SECONDS)
+        except socket.timeout as exc:
+            raise _DownloadError("timeout", f"Connection timed out opening {url}: {exc}") from exc
+        except urllib.error.HTTPError as exc:
+            raise _DownloadError("http_error", f"HTTP {exc.code} fetching {url}: {exc}") from exc
+        except urllib.error.URLError as exc:
+            raise _DownloadError("connection_error", f"Connection error fetching {url}: {exc}") from exc
+
+        with response:
             content_type = response.headers.get("Content-Type", "").lower()
             final_url = response.url
+            content_length_header = response.headers.get("Content-Length")
+            content_length = None
+            if content_length_header is not None:
+                try:
+                    content_length = int(content_length_header)
+                except ValueError:
+                    content_length = None
+                if content_length is not None and content_length > _MAX_DOWNLOAD_BYTES:
+                    raise _DownloadError(
+                        "size_limit_exceeded",
+                        f"Content-Length {content_length} exceeds max {_MAX_DOWNLOAD_BYTES} bytes for {url}",
+                    )
 
             if "text/html" in content_type and "/pluginfile.php/" not in final_url:
-                print("Response was HTML, not a downloadable file.")
-                return False, None
+                raise _DownloadError("invalid_content", f"Response was HTML, not a downloadable file: {url}")
 
             with open(destination, "wb") as f:
                 while True:
-                    chunk = response.read(_DOWNLOAD_CHUNK_SIZE)
+                    elapsed = time.monotonic() - start
+                    if elapsed > _TOTAL_DOWNLOAD_DEADLINE_SECONDS:
+                        raise _DownloadError(
+                            "timeout",
+                            f"Total download deadline of {_TOTAL_DOWNLOAD_DEADLINE_SECONDS}s exceeded for "
+                            f"{url} after {bytes_downloaded} bytes",
+                        )
+                    try:
+                        chunk = response.read(_DOWNLOAD_CHUNK_SIZE)
+                    except socket.timeout as exc:
+                        raise _DownloadError(
+                            "timeout", f"Read timed out for {url} after {bytes_downloaded} bytes: {exc}"
+                        ) from exc
                     if not chunk:
                         break
+                    bytes_downloaded += len(chunk)
+                    if bytes_downloaded > _MAX_DOWNLOAD_BYTES:
+                        raise _DownloadError(
+                            "size_limit_exceeded",
+                            f"Downloaded {bytes_downloaded} bytes, exceeding max {_MAX_DOWNLOAD_BYTES} for {url}",
+                        )
                     f.write(chunk)
+                    now = time.monotonic()
+                    if now - last_log >= _PROGRESS_LOG_INTERVAL_SECONDS:
+                        last_log = now
+                        percent = f"{bytes_downloaded / content_length * 100:.1f}%" if content_length else "unknown"
+                        logger.info(
+                            "download progress: url=%s bytes=%d percent=%s elapsed=%.1fs",
+                            url, bytes_downloaded, percent, now - start,
+                        )
+
+            logger.info(
+                "download complete: url=%s bytes=%d elapsed=%.1fs",
+                url, bytes_downloaded, time.monotonic() - start,
+            )
             return True, final_url
+    except _DownloadError as error:
+        logger.warning(
+            "download failed: url=%s reason=%s bytes=%d elapsed=%.1fs error=%s",
+            url, error.reason, bytes_downloaded, time.monotonic() - start, error,
+        )
+        if destination.exists():
+            destination.unlink(missing_ok=True)
+        return False, None
     except Exception as error:
-        print(f"Could not download resource: {url}")
-        print(f"Error: {error}")
-        # A partially-written file from an interrupted download must never be
-        # mistaken for a real, complete document — remove it rather than leave
-        # a truncated/corrupt file sitting under a name save_document() might
-        # otherwise be told about.
+        logger.warning(
+            "download failed: url=%s reason=unknown_error bytes=%d elapsed=%.1fs error=%s: %s",
+            url, bytes_downloaded, time.monotonic() - start, type(error).__name__, error,
+        )
         if destination.exists():
             destination.unlink(missing_ok=True)
         return False, None
 
 
-def _check_remote_content_length(page, url: str) -> int | None:
-    """A cheap HEAD request — zero response-body bytes ever transferred —
-    used only to compare against the local file's real size on disk, as a
-    best-effort "has this resource changed on Moodle" signal. Deliberately
-    NOT a full GET: instruction 6 explicitly says not to make an
-    unnecessary Moodle download just to compute/compare a hash, and this
-    project's schema (storage/models.py's Resource/Document) has no
-    Moodle-provided Last-Modified/ETag/timemodified field to compare
-    against — Moodle doesn't surface one anywhere already-persisted here.
-    Content-Length is the one real, already-available signal that needs
-    no schema change and no full download. Returns None (not an error) if
-    the server doesn't return one, or the request fails for any reason —
-    callers treat that as "cannot tell, assume unchanged" rather than
-    forcing a redundant redownload on a missing signal."""
-    try:
-        cookie_header = "; ".join(f"{c['name']}={c['value']}" for c in page.context.cookies(url))
-    except Exception:
-        cookie_header = ""
-    request = urllib.request.Request(url, method="HEAD", headers={"Cookie": cookie_header} if cookie_header else {})
-    try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            content_length = response.headers.get("Content-Length")
-            return int(content_length) if content_length is not None else None
-    except Exception:
-        return None
-
-
-def _existing_document_status(page, resource: Resource) -> tuple[str, "Document | None"]:
-    """Decides whether resource already has a valid, complete, current
-    download — and if not, exactly why not. Returns (reason, document):
-      "no_existing_document"       — nothing in the database yet for this resource.
-      "missing_local_file"         — a Document row exists, but its file isn't on disk
-                                      (e.g. Render's ephemeral filesystem was wiped by a
-                                      restart/redeploy since it was downloaded — see
-                                      BUILD_LOG.md).
-      "corrupted_local_file"       — the file exists but its real, current SHA-256 no
-                                      longer matches what was recorded when it was saved.
-      "resource_updated_on_moodle" — a cheap HEAD request's Content-Length no longer
-                                      matches the local file's real size (best-effort;
-                                      see _check_remote_content_length()'s own docstring
-                                      for why this is the one signal available without a
-                                      schema change or a full re-download).
-      "already_downloaded"         — none of the above apply; safe to skip entirely.
-    None of these paths ever download the resource's actual file content from Moodle —
-    only a local file stat/re-hash (no network) and a HEAD request (no response body)."""
-    with SessionLocal() as session:
-        document = session.query(Document).filter(Document.resource_id == resource.id).first()
-        if document is None:
-            return "no_existing_document", None
-        # Detach so its attributes are still readable after the session closes below.
-        session.expunge(document)
-
-    resolved_path = resolve_document_path(document.file_path)
-    if not resolved_path.is_file():
-        return "missing_local_file", document
-
-    if document.current_hash and calculate_file_hash(resolved_path) != document.current_hash:
-        return "corrupted_local_file", document
-
-    if resource.url:
-        remote_length = _check_remote_content_length(page, resource.url)
-        if remote_length is not None and remote_length != resolved_path.stat().st_size:
-            return "resource_updated_on_moodle", document
-
-    return "already_downloaded", document
-
-
 def process_resource(page, resource):
     print(f"\nProcessing: {resource.name}")
 
-    # Skip resources that already have a valid, complete, current download —
-    # not merely "a Document row exists" (see _existing_document_status()'s
-    # docstring for the real gap that used to leave: a Document row surviving
-    # in the database while its file was gone from disk — e.g. after Render's
-    # ephemeral filesystem was wiped by a restart/redeploy, see BUILD_LOG.md —
-    # used to be silently treated as "already downloaded" forever, since only
-    # the database row's existence was ever checked, never the file's.
-    status, _existing_document = _existing_document_status(page, resource)
-    if status == "already_downloaded":
-        print("Already downloaded. Skipping.")
-        return True
-    if status != "no_existing_document":
-        print(f"Re-downloading (reason={status}).")
+    # Always (re-)downloads — no local-file-existence or previous-status
+    # check gates this. Render's filesystem is ephemeral, so a Document
+    # row or a file already on disk is never a reliable signal that a
+    # fresh copy isn't needed. save_document() below deduplicates the
+    # DATABASE record correctly (by file_path); only the download itself
+    # is unconditional.
 
     # The real filename is only known once Moodle's redirect target (if any)
     # is seen, but the download itself streams straight to disk — so a

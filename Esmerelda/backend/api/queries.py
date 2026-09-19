@@ -5,7 +5,7 @@ Every DB query and every ORM-row-to-response-model conversion lives here so
 phase) call the exact same functions instead of duplicating query logic.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -42,6 +42,7 @@ def assignment_out(assignment: Assignment, course: Course) -> AssignmentOut:
         description=assignment.description,
         dueDate=assignment.due_date,
         submissionUrl=assignment.submission_url,
+        submissionStatus=assignment.submission_status,
     )
 
 
@@ -156,7 +157,23 @@ def fetch_document(db: Session, document_id: int) -> Document | None:
 
 def fetch_sync_status(db: Session) -> SyncStatusOut:
     courses_count = db.query(func.count(Course.id)).scalar() or 0
-    latest_run = db.scalar(select(SyncRun).order_by(SyncRun.id.desc()))
+    try:
+        latest_run = db.scalar(select(SyncRun).order_by(SyncRun.id.desc()))
+    except ValueError:
+        # A malformed (non-null but unparseable) started_at/finished_at on
+        # the latest row makes SQLAlchemy's own typed DateTime column
+        # raise a bare ValueError while hydrating the ORM object —
+        # confirmed directly, not assumed (see storage/crud.py's
+        # get_running_sync_run()/_parse_started_at() for the same
+        # underlying issue and a fuller explanation). Rather than let
+        # that crash this whole endpoint (and therefore the dashboard),
+        # report it as an honest error state instead.
+        return SyncStatusOut(
+            state="error",
+            lastSyncedAt=None,
+            coursesTracked=courses_count,
+            lastError="The most recent sync run has malformed timestamp data and could not be read.",
+        )
 
     if latest_run is None:
         # No sync has ever run through the Moodle sync pipeline (moodle/sync_service.py)
@@ -171,8 +188,39 @@ def fetch_sync_status(db: Session) -> SyncStatusOut:
             lastError=None,
         )
 
+    stale_error_message: str | None = None
     if latest_run.status == "running":
-        state = "syncing"
+        # storage.crud.get_running_sync_run() is the one place that actually
+        # rewrites an abandoned "running" row to "error" (see its docstring
+        # for why: the process that owned it may have crashed before ever
+        # reporting a result) — but that only happens when someone next
+        # tries to trigger a sync. A dashboard that's just polling status,
+        # with nobody re-triggering a sync, would otherwise show "syncing"
+        # forever for a run that's actually long dead. This is a read-only
+        # check (a GET endpoint shouldn't have the side effect of mutating
+        # the database on every poll) that reports the same honest state
+        # without writing anything — the real DB row is only rewritten the
+        # next time get_running_sync_run() is actually called.
+        from storage.crud import _get_stale_sync_run_minutes
+
+        threshold_minutes = _get_stale_sync_run_minutes()
+        if latest_run.started_at is None:
+            state = "error"
+            stale_error_message = (
+                "Sync run appears abandoned: its started_at timestamp is missing/invalid, so its real "
+                "age can't be determined."
+            )
+        else:
+            age = datetime.utcnow() - latest_run.started_at
+            if age > timedelta(minutes=threshold_minutes):
+                state = "error"
+                stale_error_message = (
+                    f"Sync run appears abandoned: still marked 'running' after {age}, longer than the "
+                    f"{threshold_minutes}-minute staleness threshold. The process that started it "
+                    "likely crashed before reporting a result."
+                )
+            else:
+                state = "syncing"
     elif latest_run.status == "error":
         state = "error"
     else:
@@ -185,7 +233,7 @@ def fetch_sync_status(db: Session) -> SyncStatusOut:
         state=state,
         lastSyncedAt=last_success.finished_at if last_success else None,
         coursesTracked=courses_count,
-        lastError=latest_run.error_message if latest_run.status == "error" else None,
+        lastError=stale_error_message or (latest_run.error_message if latest_run.status == "error" else None),
     )
 
 

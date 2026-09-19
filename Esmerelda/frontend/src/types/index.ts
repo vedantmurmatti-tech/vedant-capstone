@@ -20,6 +20,11 @@ export interface Assignment {
   description: string | null;
   dueDate: string | null; // ISO 8601
   submissionUrl: string | null;
+  // Best-effort — scraped from Moodle's own assignment submission-status
+  // table by backend/moodle/sync_service.py's _fetch_submission_status();
+  // null when it couldn't be determined (a different theme/layout, a
+  // network hiccup fetching that one page) rather than a real "no status".
+  submissionStatus: string | null;
 }
 
 // The backend derives this from Moodle's raw activity/resource type

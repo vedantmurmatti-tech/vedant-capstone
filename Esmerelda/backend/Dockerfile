@@ -51,13 +51,19 @@ COPY storage/ storage/
 COPY moodle/ moodle/
 
 # storage/paths.py defaults ESMERELDA_DATA_DIR-less resolution to
-# backend/storage/ (i.e. /app/storage here) when the env var is unset;
-# set ESMERELDA_DATA_DIR (e.g. to a mounted Railway Volume path) at
-# deploy time for data to persist across redeploys — see storage/paths.py.
-# Not set here: which directory to point it at is a Railway-config
-# decision, out of scope for this Dockerfile.
+# backend/storage/ (i.e. /app/storage here) when the env var is unset —
+# and that path is NOT persisted across restarts/redeploys on Render (its
+# containers use an ephemeral filesystem by default). Set ESMERELDA_DATA_DIR
+# to a mounted Render Persistent Disk's path at deploy time for the
+# database and downloaded documents to actually survive a redeploy — see
+# storage/paths.py, and main.py's startup log, which reports which of
+# these two cases is actually in effect on every boot. Not set here: which
+# directory to point it at is a Render-dashboard configuration decision
+# (attaching a Persistent Disk and setting this env var to its mount
+# path), out of scope for this Dockerfile itself.
 
-# Railway injects $PORT at runtime; uvicorn must bind to it, not a fixed
-# port. Shell form (not exec-form JSON array) so $PORT is expanded by the
-# shell, and 0.0.0.0 so the container is reachable from outside itself.
+# Render (like several other container platforms, e.g. Railway) injects
+# $PORT at runtime; uvicorn must bind to it, not a fixed port. Shell form
+# (not exec-form JSON array) so $PORT is expanded by the shell, and
+# 0.0.0.0 so the container is reachable from outside itself.
 CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}

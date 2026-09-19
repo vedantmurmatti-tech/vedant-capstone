@@ -18,7 +18,7 @@ from .schemas import (
     SyncStatusOut,
     SyncTriggerOut,
 )
-from storage.crud import create_sync_run, finish_sync_run, get_running_sync_run
+from storage.crud import finish_sync_run, try_start_new_sync_run
 from storage.paths import resolve_document_path
 
 logger = logging.getLogger("esmerelda.sync")
@@ -28,13 +28,23 @@ router = APIRouter(prefix="/api")
 
 def _run_moodle_sync(run_id: int) -> None:
     logger.info("[SYNC DEBUG] Moodle sync task entered (run_id=%s)", run_id)
-    # Imported lazily so a machine that never triggers a sync (e.g. this
-    # process running with Playwright uninstalled, per the Dockerfile's
-    # deliberate exclusion — see BUILD_LOG.md) never pays the import cost
-    # or risks an ImportError anywhere except inside this one background task.
-    from moodle.sync_service import MoodleCredentialsError, MoodleLoginError, MoodleSyncError, run_sync
-
     try:
+        # Imported lazily, and specifically *inside* this try block — not
+        # before it. This import itself can fail (e.g. Playwright/its
+        # Chromium binary genuinely missing from whatever image is
+        # actually running, regardless of what backend/Dockerfile
+        # currently installs) with a plain ImportError, which is not one
+        # of the MoodleSyncError family below. A previous version of this
+        # function had this import ABOVE the try block entirely — an
+        # ImportError there would propagate out of this whole
+        # BackgroundTasks callback uncaught, meaning finish_sync_run() is
+        # never called and this SyncRun row is left at status="running"
+        # forever (see storage/crud.py's get_running_sync_run() staleness
+        # handling, added as a second, independent safety net for exactly
+        # this class of bug — but the real fix is not leaving the row
+        # orphaned in the first place).
+        from moodle.sync_service import MoodleCredentialsError, MoodleLoginError, MoodleSyncError, run_sync
+
         result = run_sync(run_id=run_id)
         finish_sync_run(
             run_id,
@@ -42,6 +52,12 @@ def _run_moodle_sync(run_id: int) -> None:
             courses_synced=result.courses_synced,
             assignments_synced=result.assignments_synced,
             resources_synced=result.resources_synced,
+        )
+    except ImportError as exc:
+        logger.exception("Moodle sync run %s failed: could not import moodle.sync_service", run_id)
+        finish_sync_run(
+            run_id, status="error",
+            error_message=f"Moodle sync is unavailable in this deployment: {exc}",
         )
     except (MoodleCredentialsError, MoodleLoginError, MoodleSyncError) as exc:
         logger.warning("Moodle sync run %s failed: %s", run_id, exc)
@@ -113,10 +129,17 @@ def get_sync_status(db: Session = Depends(get_db)):
 
 @router.post("/sync/moodle", response_model=SyncTriggerOut, status_code=202)
 def trigger_moodle_sync(background_tasks: BackgroundTasks):
-    if get_running_sync_run() is not None:
+    # try_start_new_sync_run() checks for an already-running sync and
+    # creates the new "running" row as a single atomic database
+    # statement — not two separate calls (the previous shape here) — so
+    # two near-simultaneous requests can't both see "nothing running"
+    # and both go on to launch their own competing Playwright session
+    # against the same Moodle account. See storage/crud.py for why that
+    # was a real, not just theoretical, race.
+    run = try_start_new_sync_run()
+    if run is None:
         raise HTTPException(status_code=409, detail="A Moodle sync is already in progress.")
 
-    run = create_sync_run()
     background_tasks.add_task(_run_moodle_sync, run.id)
     return SyncTriggerOut(runId=run.id, state="syncing")
 
@@ -156,11 +179,21 @@ def get_moodle_login_diagnostics():
     code and the SyncRun.login_diagnostics* columns) once the
     investigation it was added for is complete.
     """
+    import os
+
     from moodle.sync_service import DIAGNOSTIC_BUILD_MARKER
     from storage.crud import get_latest_login_diagnostics
+    from storage.paths import get_data_dir
 
     result = get_latest_login_diagnostics()
     result["buildMarker"] = DIAGNOSTIC_BUILD_MARKER
+    # No secret here — just the resolved path and whether it's using the
+    # container's own (likely non-persistent) filesystem. See main.py's
+    # matching startup log line for why this matters: an unset
+    # ESMERELDA_DATA_DIR on a platform like Render means every restart or
+    # redeploy silently wipes the database and downloaded documents.
+    result["dataDir"] = str(get_data_dir())
+    result["dataDirEphemeralFallback"] = "ESMERELDA_DATA_DIR" not in os.environ
     return result
 
 

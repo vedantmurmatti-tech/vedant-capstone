@@ -7,16 +7,18 @@ individual modules used to hardcode it — `get_database_path()` to
 `backend/storage/esmerelda.db`, `get_documents_dir()` to
 `backend/storage/documents/`.
 
-When `ESMERELDA_DATA_DIR` is set (e.g. a future Railway Volume mount
+When `ESMERELDA_DATA_DIR` is set (e.g. a Render Persistent Disk's mount
 path such as `/data`), it overrides the base directory *both* the
 database and the documents resolve under, with no other code change
 needed — every module that needs to know where the database or
 documents live (`storage/database.py`, `api/mcp_bridge.py`,
 `moodle/document_downloader.py`, `api/routes.py`) now goes through this
-one module instead of separately hardcoding `storage/`. Setting this env
-var is still out of scope for this change (no deployment files or
-Railway-specific configuration were added) — it's wired up and ready for
-when that happens.
+one module instead of separately hardcoding `storage/`. Actually setting
+this env var to a real, attached disk is a Render-dashboard configuration
+step, out of scope for this repository's own files — it's wired up and
+ready for when that happens. See main.py's startup log for a direct,
+zero-guessing way to confirm from a running instance's own logs whether
+this has actually been done.
 """
 
 import os
@@ -28,7 +30,7 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 def get_data_dir() -> Path:
     override = os.environ.get("ESMERELDA_DATA_DIR")
     data_dir = Path(override) if override else BACKEND_DIR / "storage"
-    # A fresh Railway Volume mount is an empty directory (the mount point
+    # A fresh Render Persistent Disk mount is an empty directory (the mount point
     # itself exists, but nothing under it does yet) — sqlite3 needs this
     # directory to exist before it can create esmerelda.db inside it, so
     # this is created defensively on every resolution rather than assumed.

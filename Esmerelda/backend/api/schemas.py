@@ -31,6 +31,7 @@ class AssignmentOut(BaseModel):
     description: str | None
     dueDate: datetime | None
     submissionUrl: str | None
+    submissionStatus: str | None = None
 
 
 class ResourceOut(BaseModel):
