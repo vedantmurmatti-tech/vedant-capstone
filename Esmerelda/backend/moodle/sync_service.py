@@ -560,6 +560,122 @@ def _classify_resource_type(href: str) -> str:
     return "Activity"
 
 
+def _scan_page_for_resources(page, course_name: str, moodle_url: str, seen_urls: set[str]) -> tuple[int, int, int]:
+    """Scans every link on whatever page is currently loaded and persists
+    each real candidate as a resource. Returns (discovered, persisted,
+    failed). `seen_urls` is shared across every page scanned for one
+    course (the main course page plus any additional section pages — see
+    _sync_course_resources()) so the same resource linked from two
+    different section pages isn't double-counted.
+
+    Deliberately does NOT filter by `link.is_visible()` — a prior version
+    did, which turned out to be a real bug: Moodle commonly renders a
+    course's non-current sections/topics already collapsed by default
+    (a CSS `display:none`-style state, toggled open by JS on click, not
+    re-fetched from the server) — confirmed directly by constructing a
+    real collapsed `<div class="collapse">` in a real headless Chromium
+    page and observing `link.is_visible()` return False for a link inside
+    it despite the link and its href being completely real and present in
+    the DOM. Since assignments are discovered separately via the
+    dashboard Timeline block (never affected by a course page's own
+    section collapse state), this exactly matches the reported symptom of
+    assignments/deadlines succeeding while resources did not. A resource
+    existing only inside a currently-collapsed section is still a real,
+    persistable resource — visibility was never a meaningful filter for
+    "does this resource exist," only for "is a human currently looking at
+    it," so removing it can only find more real resources, never fewer."""
+    discovered = 0
+    persisted = 0
+    failed = 0
+    links = page.locator("a[href]")
+    link_count = links.count()
+    for i in range(link_count):
+        try:
+            link = links.nth(i)
+            name = link.inner_text().strip()
+            href = link.get_attribute("href")
+            if not name or not href:
+                logger.info("[SYNC DEBUG] resource link skipped on '%s' (link %d/%d): reason=no_name_or_href", course_name, i, link_count)
+                continue
+            if any(fragment in href for fragment in _IGNORED_HREF_FRAGMENTS):
+                logger.info("[SYNC DEBUG] resource link skipped on '%s': reason=ignored_fragment href=%s", course_name, href)
+                continue
+            if name.lower() in _IGNORED_LINK_TEXT:
+                logger.info("[SYNC DEBUG] resource link skipped on '%s': reason=ignored_text name=%r", course_name, name)
+                continue
+            if "/mod/assign/" in href:
+                continue  # assignments are synced separately, via the timeline (has due dates) — not a skip worth logging, this is every course's normal shape
+            href = urljoin(moodle_url, href)
+            if href in seen_urls:
+                continue  # already discovered via another link/section page to the same resource — not a skip worth logging either
+            seen_urls.add(href)
+            discovered += 1
+
+            resource_type = _classify_resource_type(href)
+            moodle_id = _course_moodle_id(href) or href
+            saved = save_resource(
+                moodle_id=moodle_id,
+                course_name=course_name,
+                name=name,
+                resource_type=resource_type,
+                url=href,
+            )
+            if saved is not None:
+                persisted += 1
+                logger.info("[SYNC DEBUG] resource written to DB: course='%s' name=%r type=%s", course_name, name, resource_type)
+            else:
+                logger.warning("[SYNC DEBUG] resource discovered but NOT persisted (save_resource returned None): course='%s' name=%r type=%s", course_name, name, resource_type)
+        except Exception as exc:
+            failed += 1
+            logger.warning(
+                "[SYNC DEBUG] resource link FAILED on '%s' (link %d/%d): %s: %s",
+                course_name, i, link_count, type(exc).__name__, exc,
+            )
+            continue
+    return discovered, persisted, failed
+
+
+_MAX_SECTION_PAGES_PER_COURSE = 20
+
+
+def _find_additional_section_pages(page, course_url: str, moodle_url: str) -> list[str]:
+    """Some Moodle course-format/theme configurations ("Show one section
+    per page") render each week/topic as its own page
+    (`course/view.php?id=X&section=N`) rather than all sections on one
+    page — in that mode, scanning only `course_url` itself would only
+    ever see section 0 (announcements/general), silently missing every
+    other topic's resources even with the is_visible() fix above. This
+    looks for other same-course section links on the page and returns
+    them (deduplicated, capped, absolute) so _sync_course_resources() can
+    visit each one too. Returns an empty list on a single-page course
+    (the normal case) — that course's own section-0 anchor links to
+    itself and is excluded here as not "additional"."""
+    course_id = _course_moodle_id(course_url)
+    if not course_id:
+        return []
+    try:
+        section_links = page.locator(f'a[href*="section="]')
+        found: list[str] = []
+        for i in range(section_links.count()):
+            try:
+                href = section_links.nth(i).get_attribute("href")
+                if not href:
+                    continue
+                href = urljoin(moodle_url, href)
+                if _course_moodle_id(href) != course_id:
+                    continue  # a section link belonging to a different course — ignore
+                if href == course_url or href in found:
+                    continue
+                found.append(href)
+                if len(found) >= _MAX_SECTION_PAGES_PER_COURSE:
+                    break
+            except Exception:
+                continue
+        return found
+    except Exception:
+        return []
+
+
 def _sync_course_resources(page, course_url: str, course_name: str, moodle_url: str) -> tuple[int, int]:
     """Returns (discovered, persisted) — discovered is every link that
     passed the ignore-filters below (a real candidate resource);
@@ -580,61 +696,35 @@ def _sync_course_resources(page, course_url: str, course_name: str, moodle_url: 
         logger.error("[SYNC DEBUG] failed to open course page for '%s': %s: %s", course_name, type(exc).__name__, exc)
         raise MoodleSyncError(f"Could not open course page for '{course_name}': {exc}") from exc
 
-    links = page.locator("a[href]")
-    link_count = links.count()
-    # This implementation scans every link on the course page directly
-    # rather than grouping by <li class="section"> first (unlike
-    # content_radar.py's section-by-section walk) — there is no separate
-    # per-section count to report, so "sections/topics discovered" is
-    # logged here as the raw candidate-link count instead, which is the
-    # closest real signal this code actually has.
-    logger.info("[SYNC DEBUG] sections/topics discovered for '%s': %d candidate links on the page", course_name, link_count)
+    link_count = page.locator("a[href]").count()
+    logger.info("[SYNC DEBUG] sections/topics discovered for '%s': %d candidate links on the main course page", course_name, link_count)
 
-    discovered = 0
-    persisted = 0
     seen_urls: set[str] = set()
-    for i in range(link_count):
+    discovered, persisted, failed = _scan_page_for_resources(page, course_name, moodle_url, seen_urls)
+
+    additional_sections = _find_additional_section_pages(page, course_url, moodle_url)
+    if additional_sections:
+        logger.info(
+            "[SYNC DEBUG] '%s' uses a multi-page course display — %d additional section page(s) found, visiting each",
+            course_name, len(additional_sections),
+        )
+    for section_url in additional_sections:
         try:
-            link = links.nth(i)
-            if not link.is_visible():
-                continue
-            name = link.inner_text().strip()
-            href = link.get_attribute("href")
-            if not name or not href:
-                continue
-            if any(fragment in href for fragment in _IGNORED_HREF_FRAGMENTS):
-                continue
-            if name.lower() in _IGNORED_LINK_TEXT:
-                continue
-            if "/mod/assign/" in href:
-                continue  # assignments are synced separately, via the timeline (has due dates)
-            href = urljoin(moodle_url, href)
-            if href in seen_urls:
-                continue
-            seen_urls.add(href)
-            discovered += 1
-
-            moodle_id = _course_moodle_id(href) or href
-            saved = save_resource(
-                moodle_id=moodle_id,
-                course_name=course_name,
-                name=name,
-                resource_type=_classify_resource_type(href),
-                url=href,
-            )
-            if saved is not None:
-                persisted += 1
-                logger.info("[SYNC DEBUG] resource written to DB: course='%s' name=%r type=%s", course_name, name, _classify_resource_type(href))
-            else:
-                logger.warning("[SYNC DEBUG] resource discovered but NOT persisted (save_resource returned None): course='%s' name=%r", course_name, name)
+            page.goto(section_url, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(1000)
         except Exception as exc:
-            logger.warning(
-                "[SYNC DEBUG] skipped one resource link on '%s' (link %d/%d): %s: %s",
-                course_name, i, link_count, type(exc).__name__, exc,
-            )
+            failed += 1
+            logger.warning("[SYNC DEBUG] failed to open section page %s for '%s': %s: %s", section_url, course_name, type(exc).__name__, exc)
             continue
+        section_discovered, section_persisted, section_failed = _scan_page_for_resources(page, course_name, moodle_url, seen_urls)
+        discovered += section_discovered
+        persisted += section_persisted
+        failed += section_failed
 
-    logger.info("[SYNC DEBUG] resources discovered for '%s': discovered=%d persisted=%d", course_name, discovered, persisted)
+    logger.info(
+        "[SYNC DEBUG] resources discovered for '%s': discovered=%d persisted=%d failed=%d",
+        course_name, discovered, persisted, failed,
+    )
     return discovered, persisted
 
 
