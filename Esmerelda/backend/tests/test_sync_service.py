@@ -651,12 +651,15 @@ try:
         doc_count_after_line = next((l for l in proc.stdout.splitlines() if l.startswith("DOCUMENT_COUNT_AFTER_SECOND_SYNC:")), None)
         version_count_after_line = next((l for l in proc.stdout.splitlines() if l.startswith("VERSION_COUNT_AFTER_SECOND_SYNC:")), None)
         check(
-            "6s. Idempotency (instruction 8): a second sync in the same run downloads 0 NEW documents — "
-            "already-downloaded resources are skipped, not re-fetched or duplicated",
-            second_downloaded_line == "RESULT2_DOCS_DOWNLOADED:0",
+            "6s. Every eligible document is re-downloaded on a second, repeated sync (Render's filesystem is "
+            "ephemeral, so local download history is never trusted as a reason to skip) — both real documents "
+            "download again",
+            second_downloaded_line == "RESULT2_DOCS_DOWNLOADED:2",
         )
         check(
-            "6t. Document/DocumentVersion counts are unchanged after the second sync — no duplicates created",
+            "6t. Document/DocumentVersion counts are unchanged after the second sync even though both files "
+            "were re-downloaded — save_document()'s upsert-by-file_path dedup means re-downloading identical "
+            "content updates the existing row rather than creating a duplicate",
             doc_count_after_line == "DOCUMENT_COUNT_AFTER_SECOND_SYNC:2"
             and version_count_after_line == "VERSION_COUNT_AFTER_SECOND_SYNC:2",
         )
@@ -742,15 +745,13 @@ try:
     )
     check(
         "6u. All requested document-pipeline log stages are present: eligible, per-item progress (N/X), "
-        "succeeded, SKIPPED (on the second, idempotent sync), failed, and a final summary with "
-        "documents_downloaded/documents_failed/versions created",
+        "succeeded, failed, and a final summary with documents_downloaded/documents_failed/versions created "
+        "— every eligible resource is attempted on every sync, none skipped for existing-locally reasons",
         "documents eligible=3" in combined_output
         and "document download 1/3" in combined_output
         and "document download 2/3" in combined_output
         and "document download 3/3" in combined_output
         and "succeeded: resource_id=" in combined_output
-        and "document download skipped: resource_id=" in combined_output
-        and "reason=already_downloaded" in combined_output
         and "failed (no file found or save error)" in combined_output
         and "document sync summary:" in combined_output
         and "documents_downloaded=2" in combined_output

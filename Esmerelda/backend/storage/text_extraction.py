@@ -31,6 +31,19 @@ logger = logging.getLogger("esmerelda.moodle_sync")
 # cap limits what's kept afterward, not what's parsed).
 _MAX_EXTRACTED_CHARS = 300_000
 
+# Deterministic, synchronous safety bounds rather than a wall-clock
+# timeout: this module is called from moodle/document_downloader.py's
+# single-threaded, synchronous per-resource loop, and the same
+# "no abandoned background threads" constraint that shaped the download
+# timeout design applies here too — a real timeout would need a thread or
+# signal-based interrupt to abort work already inside a C extension
+# (pypdf/python-docx/python-pptx), which risks leaving that library in an
+# inconsistent state. A file-size ceiling and a per-document page/shape
+# cap bound the worst case instead, without needing to interrupt
+# in-progress library calls at all.
+_MAX_EXTRACTION_FILE_BYTES = 50 * 1024 * 1024  # 50 MiB
+_MAX_PDF_PAGES = 2000
+
 _EXTRACTABLE_FILE_TYPES = {"PDF", "Word Document", "PowerPoint"}
 
 # Maps a real downloaded file's own extension to an extractable type.
@@ -74,6 +87,20 @@ def extract_text(file_path: Path, file_type: str | None) -> str | None:
     guess_extractable_type() — see that function's docstring."""
     if not is_extractable(file_type):
         return None
+
+    try:
+        file_size = file_path.stat().st_size
+    except OSError as exc:
+        logger.warning("[SYNC DEBUG] text extraction skipped, could not stat %s: %s: %s", file_path.name, type(exc).__name__, exc)
+        return None
+    if file_size > _MAX_EXTRACTION_FILE_BYTES:
+        logger.warning(
+            "[SYNC DEBUG] text extraction skipped for %s (%s): file is %d bytes, exceeding the %d byte "
+            "extraction limit — the document itself was still downloaded and saved normally",
+            file_path.name, file_type, file_size, _MAX_EXTRACTION_FILE_BYTES,
+        )
+        return None
+
     try:
         if file_type == "PDF":
             text = _extract_pdf(file_path)
@@ -98,10 +125,34 @@ def _extract_pdf(file_path: Path) -> str:
 
     reader = PdfReader(str(file_path))
     parts = []
-    for page in reader.pages:
-        page_text = page.extract_text() or ""
+    total_chars = 0
+    for page_number, page in enumerate(reader.pages):
+        if page_number >= _MAX_PDF_PAGES:
+            logger.warning(
+                "[SYNC DEBUG] PDF extraction stopped early for %s: reached the %d page cap",
+                file_path.name, _MAX_PDF_PAGES,
+            )
+            break
+        # A scanned (image-only) page or one pypdf can't parse yields ""
+        # (or raises, caught per-page here so one bad page doesn't lose
+        # every other page's real text) — both are normal, not errors.
+        try:
+            page_text = page.extract_text() or ""
+        except Exception as exc:
+            logger.warning(
+                "[SYNC DEBUG] PDF page %d extraction failed for %s, skipping that page: %s: %s",
+                page_number, file_path.name, type(exc).__name__, exc,
+            )
+            continue
         if page_text:
             parts.append(page_text)
+            total_chars += len(page_text)
+            if total_chars >= _MAX_EXTRACTED_CHARS:
+                # Already far more than extract_text()'s own output cap
+                # will keep — stop reading further pages of a huge
+                # document rather than parsing all of them just to
+                # truncate the result afterward.
+                break
     return "\n".join(parts)
 
 

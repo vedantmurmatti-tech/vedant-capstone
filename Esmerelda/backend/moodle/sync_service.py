@@ -18,12 +18,16 @@ BackgroundTasks, with a storage.models.SyncRun row tracking progress/
 success/failure so GET /api/sync-status can report real state instead of
 guessing from unrelated timestamps.
 
-Known limitation (see BUILD_LOG.md): this needs Playwright + a real
-Chromium browser installed in whatever process runs it. The production
-Docker image (backend/Dockerfile) deliberately excludes Playwright, since
-until now nothing in the deployed API needed it — triggering a sync from
-a deployed container will fail with a clear MoodleSyncError, not a crash,
-until that image is updated to include Playwright and its browser binary.
+Needs Playwright + a real Chromium browser installed in whatever process
+runs it. backend/Dockerfile installs both (`playwright install --with-deps
+chromium`) specifically so POST /api/sync/moodle works in the deployed
+container — an earlier version of that Dockerfile excluded Playwright
+entirely (back when nothing deployed needed it yet), which has since been
+reversed; see BUILD_LOG.md for that history. If this module is ever run
+from an environment where Playwright/Chromium genuinely isn't installed,
+the import itself fails with an ImportError before _login() is even
+reached, not a clean MoodleSyncError — this is a real, distinct failure
+mode from "Moodle rejected the login" and is worth telling apart in logs.
 
 Session isolation (see BUILD_LOG.md's "repeated syncs fail after the
 first" diagnosis): run_sync() launches a brand-new Chromium *browser*
@@ -511,7 +515,11 @@ def _detect_active_courses(page, moodle_url: str) -> list[dict]:
 
     active_names = lines[start:end] if start != -1 else []
     active_courses = [
-        {"name": name, "url": all_courses[name]}
+        {
+            "name": name,
+            "url": all_courses[name],
+            "moodle_id": _course_moodle_id(all_courses[name]),
+        }
         for name in active_names
         if name in all_courses
     ]
@@ -567,7 +575,54 @@ def _classify_resource_type(href: str) -> str:
     return "Activity"
 
 
-def _scan_page_for_resources(page, course_name: str, moodle_url: str, seen_urls: set[str]) -> tuple[int, int, int]:
+def _resource_moodle_id(href: str, course_moodle_id: str | None, resource_type: str) -> str:
+    """Every real Moodle activity-module view page (`/mod/{type}/view.php?id=N`
+    — Resource, Quiz, Page, Link/URL, Folder, and Assignment all take this
+    exact shape) carries a `cmid` in its `id=` query parameter, and cmids
+    are a single, global sequence across an entire Moodle site — never
+    reused, never scoped per-course. `_course_moodle_id()` extracting one
+    from a real activity href is the common, reliable case, unchanged
+    here.
+
+    The fallback (no `id=` at all) is real, not merely theoretical — it
+    fires for a direct file link: an instructor-pasted external URL, a
+    file dragged directly into a Label/Page's rich-text body, or an
+    expanded Folder's individual file listing, all of which Moodle
+    renders as a raw link straight to the file (often a `pluginfile.php`
+    URL) rather than through any `/mod/.../view.php?id=N` wrapper. This
+    project's own test fixtures already exercise exactly this shape (a
+    plain `<a href=".../course-syllabus.docx">` with no `id=`), so it is
+    a real, exercised code path — not a hypothetical.
+
+    Using the bare href as-is for that fallback (the previous behavior)
+    has a concrete, demonstrable collision risk: `Resource.moodle_id` is
+    unique *globally*, not scoped per course. If the exact same file URL
+    is legitimately linked from two different courses (a shared syllabus
+    template, a common reading list, an external link reused across
+    sections of the same course) — a realistic scenario, not contrived —
+    both courses' scans would compute the identical moodle_id, and the
+    second course's save_resource() call would silently steal that one
+    Resource row's course_id away from the first course, rather than
+    creating a second, correctly separate resource. Folding the course's
+    own moodle_id and the resource's classified type into the fallback
+    identifier makes that specific collision structurally impossible: two
+    different courses linking the same URL now always produce two
+    different composite ids."""
+    activity_id = _course_moodle_id(href)
+    if activity_id:
+        return activity_id
+    return f"resource:{course_moodle_id or 'unknown-course'}:{resource_type}:{href}"
+
+
+def _scan_page_for_resources(
+    page,
+    course_name: str,
+    moodle_url: str,
+    seen_urls: set[str],
+    course_moodle_id: str | None = None,
+    assignment_hrefs_seen: set[str] | None = None,
+    assignment_candidates: list[dict] | None = None,
+) -> tuple[int, int, int]:
     """Scans every link on whatever page is currently loaded and persists
     each real candidate as a resource. Returns (discovered, persisted,
     failed). `seen_urls` is shared across every page scanned for one
@@ -611,7 +666,30 @@ def _scan_page_for_resources(page, course_name: str, moodle_url: str, seen_urls:
                 logger.info("[SYNC DEBUG] resource link skipped on '%s': reason=ignored_text name=%r", course_name, name)
                 continue
             if "/mod/assign/" in href:
-                continue  # assignments are synced separately, via the timeline (has due dates) — not a skip worth logging, this is every course's normal shape
+                # Not persisted as a Resource — an assignment activity, not a
+                # downloadable file. Still collected as a secondary
+                # assignment-discovery candidate (see
+                # _sync_course_page_assignments()): the dashboard Timeline
+                # block only ever surfaces an assignment that has a due
+                # date and falls within Moodle's own Timeline window, so an
+                # assignment with no due date, one further out than the
+                # Timeline shows, or one Moodle's Timeline template simply
+                # doesn't render for some course/theme combination is
+                # otherwise never discovered at all. This course page is
+                # already loaded for resource scanning — no extra
+                # navigation is needed to also notice these links.
+                if assignment_candidates is not None:
+                    absolute_href = urljoin(moodle_url, href)
+                    if assignment_hrefs_seen is None or absolute_href not in assignment_hrefs_seen:
+                        if assignment_hrefs_seen is not None:
+                            assignment_hrefs_seen.add(absolute_href)
+                        assignment_candidates.append({
+                            "href": absolute_href,
+                            "name": name,
+                            "course_name": course_name,
+                            "course_moodle_id": course_moodle_id,
+                        })
+                continue  # never persisted as a Resource — handled entirely by the assignment path above
             href = urljoin(moodle_url, href)
             if href in seen_urls:
                 continue  # already discovered via another link/section page to the same resource — not a skip worth logging either
@@ -619,13 +697,14 @@ def _scan_page_for_resources(page, course_name: str, moodle_url: str, seen_urls:
             discovered += 1
 
             resource_type = _classify_resource_type(href)
-            moodle_id = _course_moodle_id(href) or href
+            moodle_id = _resource_moodle_id(href, course_moodle_id, resource_type)
             saved = save_resource(
                 moodle_id=moodle_id,
                 course_name=course_name,
                 name=name,
                 resource_type=resource_type,
                 url=href,
+                course_moodle_id=course_moodle_id,
             )
             if saved is not None:
                 persisted += 1
@@ -685,8 +764,16 @@ def _find_additional_section_pages(page, course_url: str, moodle_url: str) -> li
 
 def _sync_course_resources(
     page, course_url: str, course_name: str, moodle_url: str, *, probe_multi_page_display: bool = True
-) -> tuple[int, int, bool]:
-    """Returns (discovered, persisted, found_multi_page_sections).
+) -> tuple[int, int, bool, list[dict]]:
+    """Returns (discovered, persisted, found_multi_page_sections, assignment_candidates).
+
+    assignment_candidates: every /mod/assign/ link seen while scanning this
+    course's page(s) (main page plus any additional section pages), each as
+    {"href", "name", "course_name", "course_moodle_id"} — fed into
+    _sync_course_page_assignments() by run_sync() as a secondary,
+    course-page-based assignment-discovery path alongside the existing
+    dashboard-Timeline-based one. See _scan_page_for_resources()'s
+    docstring for why this exists.
 
     discovered/persisted: discovered is every link that passed the
     ignore-filters below (a real candidate resource); persisted is only
@@ -732,7 +819,12 @@ def _sync_course_resources(
     logger.info("[SYNC DEBUG] sections/topics discovered for '%s': %d candidate links on the main course page", course_name, link_count)
 
     seen_urls: set[str] = set()
-    discovered, persisted, failed = _scan_page_for_resources(page, course_name, moodle_url, seen_urls)
+    assignment_hrefs_seen: set[str] = set()
+    assignment_candidates: list[dict] = []
+    course_moodle_id = _course_moodle_id(course_url)
+    discovered, persisted, failed = _scan_page_for_resources(
+        page, course_name, moodle_url, seen_urls, course_moodle_id, assignment_hrefs_seen, assignment_candidates
+    )
 
     additional_sections = _find_additional_section_pages(page, course_url, moodle_url) if probe_multi_page_display else []
     if not probe_multi_page_display:
@@ -750,7 +842,9 @@ def _sync_course_resources(
             failed += 1
             logger.warning("[SYNC DEBUG] failed to open section page %s for '%s': %s: %s", section_url, course_name, type(exc).__name__, exc)
             continue
-        section_discovered, section_persisted, section_failed = _scan_page_for_resources(page, course_name, moodle_url, seen_urls)
+        section_discovered, section_persisted, section_failed = _scan_page_for_resources(
+            page, course_name, moodle_url, seen_urls, course_moodle_id, assignment_hrefs_seen, assignment_candidates
+        )
         discovered += section_discovered
         persisted += section_persisted
         failed += section_failed
@@ -759,7 +853,7 @@ def _sync_course_resources(
         "[SYNC DEBUG] resources discovered for '%s': discovered=%d persisted=%d failed=%d",
         course_name, discovered, persisted, failed,
     )
-    return discovered, persisted, bool(additional_sections)
+    return discovered, persisted, bool(additional_sections), assignment_candidates
 
 
 def _extract_due_date(text: str, assignment_name: str) -> datetime | None:
@@ -780,34 +874,79 @@ def _extract_due_date(text: str, assignment_name: str) -> datetime | None:
         return None
 
 
-def _fetch_submission_status(page, assignment_url: str) -> str | None:
-    """Best-effort only: visits the assignment page and looks for Moodle's
-    own submission-status table. Different Moodle themes/versions render
-    this differently, so any failure here is swallowed — a missing
-    submission status is not treated as a sync failure."""
+_MAX_ASSIGNMENT_DESCRIPTION_CHARS = 2000
+
+
+def _fetch_assignment_page_details(page, assignment_url: str) -> tuple[str | None, str | None]:
+    """Best-effort only: visits the assignment's own page ONCE and reads
+    both its submission-status table and its description/instructions
+    text — combined into a single function (replacing the previous
+    _fetch_submission_status()) specifically so extracting a description
+    costs no additional page navigation beyond what this sync already
+    does for submission status. Different Moodle themes/versions render
+    either piece differently, so any failure extracting either one is
+    swallowed independently — a missing submission status or a missing
+    description is not treated as a sync failure, and one being
+    unavailable never prevents the other from being read.
+
+    Returns (submission_status, description) — either or both may be
+    None.
+
+    Description extraction targets Moodle's `#intro` container, which is
+    mod_assign's own core view.php template output (the assignment
+    intro/instructions box), not a theme-specific CSS class — this
+    should be stable across themes in principle. This has NOT been
+    verified against a real, live Moodle instance from this environment
+    (no real Moodle account was available to this audit) — if the actual
+    target site's theme renders this differently, extraction simply
+    keeps returning None, the same safe default as any other best-effort
+    field in this file; nothing downstream treats a missing description
+    as an error."""
+    submission_status: str | None = None
+    description: str | None = None
     try:
         page.goto(assignment_url, wait_until="domcontentloaded", timeout=20000)
         page.wait_for_timeout(1000)
-        status_table = page.locator("table.submissionstatustable, .submissionstatustable").first
-        if status_table.count() == 0:
-            return None
-        text = status_table.inner_text()
-        match = re.search(r"Submission status\s*\n?\s*(.+)", text)
-        return match.group(1).strip()[:255] if match else None
     except Exception:
-        return None
+        return None, None
+
+    try:
+        status_table = page.locator("table.submissionstatustable, .submissionstatustable").first
+        if status_table.count() > 0:
+            text = status_table.inner_text()
+            match = re.search(r"Submission status\s*\n?\s*(.+)", text)
+            submission_status = match.group(1).strip()[:255] if match else None
+    except Exception:
+        pass
+
+    try:
+        intro = page.locator("#intro").first
+        if intro.count() > 0:
+            intro_text = intro.inner_text().strip()
+            if intro_text:
+                description = intro_text[:_MAX_ASSIGNMENT_DESCRIPTION_CHARS]
+    except Exception:
+        pass
+
+    return submission_status, description
 
 
-def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) -> tuple[int, int]:
+def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) -> tuple[int, int, set[str]]:
     """Uses the dashboard Timeline block (aggregates every active
     course's upcoming/overdue assignments in one place) rather than
     visiting every course's activity list individually — matching
     submission_radar.py's approach, generalized to match against the
     real active-course list instead of a hardcoded course-code regex.
 
-    Returns (discovered, persisted) — see _sync_course_resources()'s
-    docstring for what that distinction means and why it's tracked
-    separately.
+    Returns (discovered, persisted, persisted_moodle_ids) — see
+    _sync_course_resources()'s docstring for what discovered/persisted
+    mean and why they're tracked separately. persisted_moodle_ids is the
+    set of every assignment moodle_id this Timeline pass actually wrote
+    to the database — run_sync() passes it to
+    _sync_course_page_assignments() (the secondary, course-page-based
+    discovery path) so an assignment already found here is never
+    re-fetched or re-persisted there, without needing any assumption
+    about matching URLs/text between the two paths.
 
     moodle_url is the real site root (the same URL passed to _login()) —
     a previous version navigated to the bare relative path "dashboard/",
@@ -831,7 +970,7 @@ def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) 
             "[SYNC DEBUG] failed to navigate to the dashboard for assignment discovery (%s): %s: %s",
             dashboard_url, type(exc).__name__, exc,
         )
-        return 0, 0
+        return 0, 0, set()
     logger.info("[SYNC DEBUG] dashboard/current page loaded: url=%s title=%r", page.url, _safe_title(page))
 
     # Root cause of a real regression (see BUILD_LOG.md): by the time this
@@ -867,7 +1006,7 @@ def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) 
             "(this does NOT mean zero courses; it means the Timeline block wasn't present/matched on this page)",
             page.url,
         )
-        return 0, 0
+        return 0, 0, set()
     try:
         timeline.wait_for(state="visible", timeout=10000)
     except Exception as exc:
@@ -875,6 +1014,9 @@ def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) 
     page.wait_for_timeout(1500)
 
     active_names = {c["name"] for c in active_courses}
+    active_by_moodle_id = {
+        c["moodle_id"]: c for c in active_courses if c.get("moodle_id")
+    }
     discovered = 0
     persisted = 0
     per_course_discovered: dict[str, int] = {}
@@ -983,6 +1125,7 @@ def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) 
             # single-spaced string) would otherwise miss.
             due_date = None
             course_name = None
+            course_moodle_id = None
             parent = link
             for _ in range(8):
                 try:
@@ -993,6 +1136,28 @@ def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) 
                     break
                 if due_date is None:
                     due_date = _extract_due_date(parent_text, assignment_name)
+                # Prefer a stable course id: a nearby /course/view.php?id=N
+                # link (Moodle renders one somewhere in a Timeline entry's
+                # ancestor chain, e.g. the course-name link itself) is a
+                # reliable, unambiguous identifier — unlike text matching,
+                # it can't be fooled by one active course's name being a
+                # substring of another's, or by whitespace/markup
+                # differences between the scraped dashboard name and this
+                # element's text.
+                if course_moodle_id is None:
+                    try:
+                        course_links = parent.locator('a[href*="/course/view.php"]')
+                        for j in range(course_links.count()):
+                            link_href = course_links.nth(j).get_attribute("href")
+                            if not link_href:
+                                continue
+                            candidate_id = _course_moodle_id(urljoin(moodle_url, link_href))
+                            if candidate_id and candidate_id in active_by_moodle_id:
+                                course_moodle_id = candidate_id
+                                course_name = active_by_moodle_id[candidate_id]["name"]
+                                break
+                    except Exception:
+                        pass
                 if course_name is None:
                     for name in active_names:
                         if " ".join(name.split()) in parent_text_normalized:
@@ -1004,9 +1169,9 @@ def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) 
             if course_name is None:
                 logger.info(
                     "[SYNC DEBUG] Timeline candidate %d rejected: reason=no_matching_active_course "
-                    "assignment=%r (checked against %d active course name(s), not one of them found in "
-                    "up to 8 ancestor levels' text) — skipped, not guessed",
-                    i, assignment_name, len(active_names),
+                    "assignment=%r href=%r (checked against %d active course name(s)/id(s), none found in "
+                    "up to 8 ancestor levels) — skipped, not guessed",
+                    i, assignment_name, href, len(active_names),
                 )
                 continue
 
@@ -1015,6 +1180,7 @@ def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) 
             candidates.append({
                 "moodle_id": _course_moodle_id(href) or href,
                 "course_name": course_name,
+                "course_moodle_id": course_moodle_id,
                 "name": assignment_name,
                 "href": href,
                 "due_date": due_date,
@@ -1031,18 +1197,35 @@ def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) 
     # pass 1) and persist it. Safe now because nothing after this point
     # re-queries the Timeline page's own DOM — `candidates` is a plain
     # list already fully read from it.
+    persisted_moodle_ids: set[str] = set()
     for candidate in candidates:
-        submission_status = _fetch_submission_status(page, candidate["href"])
-        saved = save_assignment(
-            moodle_id=candidate["moodle_id"],
-            course_name=candidate["course_name"],
-            name=candidate["name"],
-            submission_url=candidate["href"],
-            due_date=candidate["due_date"],
-            submission_status=submission_status,
-        )
+        try:
+            submission_status, description = _fetch_assignment_page_details(page, candidate["href"])
+            saved = save_assignment(
+                moodle_id=candidate["moodle_id"],
+                course_name=candidate["course_name"],
+                name=candidate["name"],
+                submission_url=candidate["href"],
+                due_date=candidate["due_date"],
+                submission_status=submission_status,
+                course_moodle_id=candidate.get("course_moodle_id"),
+                assignment_url=candidate["href"],
+                description=description,
+            )
+        except Exception as exc:
+            # One assignment's unusual/malformed page (e.g. a group
+            # assignment with a different submission-status DOM shape, or
+            # a transient navigation failure) must not abort every other
+            # already-discovered candidate still waiting to be persisted.
+            logger.warning(
+                "[SYNC DEBUG] failed to fetch/persist one assignment (continuing with the rest): "
+                "course='%s' name=%r href=%r: %s: %s",
+                candidate["course_name"], candidate["name"], candidate["href"], type(exc).__name__, exc,
+            )
+            continue
         if saved is not None:
             persisted += 1
+            persisted_moodle_ids.add(candidate["moodle_id"])
             logger.info("[SYNC DEBUG] assignment written to DB: course='%s' name=%r", candidate["course_name"], candidate["name"])
         else:
             logger.warning(
@@ -1053,6 +1236,93 @@ def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) 
     logger.info(
         "[SYNC DEBUG] assignments discovered per course: %s (total discovered=%d persisted=%d)",
         per_course_discovered, discovered, persisted,
+    )
+    return discovered, persisted, persisted_moodle_ids
+
+
+def _sync_course_page_assignments(
+    page, candidates: list[dict], already_persisted_moodle_ids: set[str]
+) -> tuple[int, int]:
+    """The secondary assignment-discovery path (see
+    _scan_page_for_resources()'s docstring for why this exists): persists
+    every /mod/assign/ link found while scanning active courses' own
+    pages, skipping any assignment already discovered and persisted via
+    the dashboard Timeline (`already_persisted_moodle_ids`) so the two
+    paths never write duplicate rows or redundantly re-navigate to fetch
+    the same assignment's submission status twice.
+
+    `candidates` is the flattened list of every course's
+    assignment_candidates from _sync_course_resources() across every
+    active course visited this sync — each candidate already carries its
+    own course's real, stable `course_moodle_id` (derived directly from
+    the course page's own URL, not a DOM text/ancestor guess), which
+    makes this path's course-mapping strictly more reliable than the
+    Timeline path's ancestor-text-walk fallback.
+
+    Returns (discovered, persisted): discovered counts only NEW
+    assignments not already covered by the Timeline pass; one that's
+    already in `already_persisted_moodle_ids` is silently skipped,
+    not counted as a fresh discovery, and never re-fetched or re-saved."""
+    discovered = 0
+    persisted = 0
+    for candidate in candidates:
+        try:
+            moodle_id = _course_moodle_id(candidate["href"])
+            if not moodle_id:
+                logger.warning(
+                    "[SYNC DEBUG] course-page assignment candidate skipped: no parseable Moodle id in href=%r "
+                    "name=%r course=%r",
+                    candidate.get("href"), candidate.get("name"), candidate.get("course_name"),
+                )
+                continue
+            if moodle_id in already_persisted_moodle_ids:
+                continue  # already found and persisted via the Timeline — not a new discovery
+
+            discovered += 1
+            submission_status, description = _fetch_assignment_page_details(page, candidate["href"])
+            saved = save_assignment(
+                moodle_id=moodle_id,
+                course_name=candidate["course_name"],
+                name=candidate["name"],
+                submission_url=candidate["href"],
+                # No due date is reliably available from a generic course
+                # page link (unlike the Timeline, which has its own due-date
+                # text nearby) — None here is safe: save_assignment() only
+                # overwrites an existing due_date when given a real value,
+                # never erasing one a prior Timeline-based sync recorded.
+                due_date=None,
+                submission_status=submission_status,
+                course_moodle_id=candidate.get("course_moodle_id"),
+                assignment_url=candidate["href"],
+                description=description,
+            )
+        except Exception as exc:
+            # One malformed/unusual assignment page must not abort every
+            # other course-page-discovered candidate still waiting.
+            logger.warning(
+                "[SYNC DEBUG] failed to fetch/persist one course-page assignment (continuing with the rest): "
+                "course=%r name=%r href=%r: %s: %s",
+                candidate.get("course_name"), candidate.get("name"), candidate.get("href"),
+                type(exc).__name__, exc,
+            )
+            continue
+        if saved is not None:
+            persisted += 1
+            already_persisted_moodle_ids.add(moodle_id)
+            logger.info(
+                "[SYNC DEBUG] assignment written to DB via course-page discovery: course='%s' name=%r",
+                candidate["course_name"], candidate["name"],
+            )
+        else:
+            logger.warning(
+                "[SYNC DEBUG] course-page assignment discovered but NOT persisted (save_assignment returned "
+                "None): course='%s' name=%r",
+                candidate["course_name"], candidate["name"],
+            )
+
+    logger.info(
+        "[SYNC DEBUG] course-page assignment discovery: %d new candidate(s) beyond the Timeline, %d persisted",
+        discovered, persisted,
     )
     return discovered, persisted
 
@@ -1105,27 +1375,41 @@ def run_sync(run_id: int | None = None) -> SyncResult:
                 logger.info("[SYNC DEBUG] course traversal started: %d course(s) to visit", len(active_courses))
                 logger.info("[SYNC DEBUG] database persistence started")
                 should_probe_multi_page = True
+                course_page_assignment_candidates: list[dict] = []
                 for course in active_courses:
-                    moodle_id = _course_moodle_id(course["url"])
-                    if not moodle_id:
+                    try:
+                        moodle_id = _course_moodle_id(course["url"])
+                        if not moodle_id:
+                            logger.warning(
+                                "[SYNC DEBUG] course '%s' discovered but has no parseable Moodle id in its URL (%s) — skipped, not persisted",
+                                course["name"], course["url"],
+                            )
+                            continue
+                        save_course(moodle_id=moodle_id, name=course["name"])
+                        result.course_names.append(course["name"])
+                        logger.info("[SYNC DEBUG] course written to DB: name=%r moodle_id=%s", course["name"], moodle_id)
+
+                        course_resources_discovered, course_resources_persisted, found_multi_page, course_assignment_candidates = _sync_course_resources(
+                            page, course["url"], course["name"], moodle_url, probe_multi_page_display=should_probe_multi_page
+                        )
+                        result.resources_discovered += course_resources_discovered
+                        result.resources_synced += course_resources_persisted
+                        course_page_assignment_candidates.extend(course_assignment_candidates)
+                        if should_probe_multi_page and not found_multi_page:
+                            # Bounds the added-request-volume risk from the multi-page-display probe
+                            # (see _sync_course_resources()'s docstring) to at most one course per sync.
+                            should_probe_multi_page = False
+                    except Exception as exc:
+                        # One course's page failing to load/parse (a
+                        # transient nav timeout, an unusual course-format
+                        # DOM) must not abort resource sync for every
+                        # other active course still left to visit.
                         logger.warning(
-                            "[SYNC DEBUG] course '%s' discovered but has no parseable Moodle id in its URL (%s) — skipped, not persisted",
-                            course["name"], course["url"],
+                            "[SYNC DEBUG] failed to sync one course's resources (continuing with the rest): "
+                            "course='%s' url=%s: %s: %s",
+                            course["name"], course["url"], type(exc).__name__, exc,
                         )
                         continue
-                    save_course(moodle_id=moodle_id, name=course["name"])
-                    result.course_names.append(course["name"])
-                    logger.info("[SYNC DEBUG] course written to DB: name=%r moodle_id=%s", course["name"], moodle_id)
-
-                    course_resources_discovered, course_resources_persisted, found_multi_page = _sync_course_resources(
-                        page, course["url"], course["name"], moodle_url, probe_multi_page_display=should_probe_multi_page
-                    )
-                    result.resources_discovered += course_resources_discovered
-                    result.resources_synced += course_resources_persisted
-                    if should_probe_multi_page and not found_multi_page:
-                        # Bounds the added-request-volume risk from the multi-page-display probe
-                        # (see _sync_course_resources()'s docstring) to at most one course per sync.
-                        should_probe_multi_page = False
                 result.courses_synced = len(result.course_names)
 
                 # Pipeline order: course/resource sync -> document sync ->
@@ -1159,8 +1443,9 @@ def run_sync(run_id: int | None = None) -> SyncResult:
                     "[SYNC DEBUG] about to call _sync_course_assignments: active_courses_count=%d",
                     len(active_courses),
                 )
+                timeline_persisted_moodle_ids: set[str] = set()
                 if active_courses:
-                    result.assignments_discovered, result.assignments_synced = _sync_course_assignments(
+                    result.assignments_discovered, result.assignments_synced, timeline_persisted_moodle_ids = _sync_course_assignments(
                         page, active_courses, moodle_url
                     )
                 else:
@@ -1173,6 +1458,30 @@ def run_sync(run_id: int | None = None) -> SyncResult:
                     result.assignments_discovered, result.assignments_synced,
                 )
 
+                # Secondary assignment-discovery path: every /mod/assign/
+                # link already noticed while scanning each active course's
+                # own page(s) during resource sync above (see
+                # _scan_page_for_resources()'s docstring for why the
+                # Timeline block alone isn't sufficient — no due date, no
+                # Timeline visibility window, or a theme that doesn't
+                # render an entry into it at all are all real gaps this
+                # closes). Assignments the Timeline pass already persisted
+                # are skipped here via timeline_persisted_moodle_ids, so
+                # this only ever adds genuinely new discoveries, never
+                # duplicates or redundant re-fetches.
+                if course_page_assignment_candidates:
+                    try:
+                        course_page_discovered, course_page_persisted = _sync_course_page_assignments(
+                            page, course_page_assignment_candidates, timeline_persisted_moodle_ids
+                        )
+                        result.assignments_discovered += course_page_discovered
+                        result.assignments_synced += course_page_persisted
+                    except Exception as exc:
+                        logger.exception(
+                            "[SYNC DEBUG] course-page assignment discovery failed unexpectedly (Timeline-based "
+                            "assignment discovery above is unaffected): %s: %s", type(exc).__name__, exc,
+                        )
+
                 logger.info("[SYNC DEBUG] database commit completed")
                 logger.info(
                     "Moodle sync summary: courses_discovered=%d assignments_discovered=%d resources_discovered=%d "
@@ -1181,9 +1490,26 @@ def run_sync(run_id: int | None = None) -> SyncResult:
                     result.courses_synced, result.assignments_synced, result.resources_synced,
                 )
             finally:
+                # Each wrapped separately and never allowed to raise: a
+                # browser/context that's already crashed or been killed
+                # (e.g. an out-of-memory condition — the same class of
+                # event that motivated the stale-SyncRun handling in
+                # storage/crud.py) can make .close() itself raise. Letting
+                # that escape this `finally` would replace whatever real
+                # exception was already propagating (if any) with a
+                # confusing "cleanup failed" one instead — Python's
+                # ordinary finally-replaces-the-original-exception
+                # behavior — hiding the actual root cause from the
+                # SyncRun's error_message and the logs.
                 if context is not None:
-                    context.close()
-                browser.close()
+                    try:
+                        context.close()
+                    except Exception as exc:
+                        logger.warning("[SYNC DEBUG] context.close() failed during cleanup (ignored): %s: %s", type(exc).__name__, exc)
+                try:
+                    browser.close()
+                except Exception as exc:
+                    logger.warning("[SYNC DEBUG] browser.close() failed during cleanup (ignored): %s: %s", type(exc).__name__, exc)
     except (MoodleCredentialsError, MoodleLoginError, MoodleSyncError) as exc:
         logger.info("[SYNC DEBUG] _login raised: %s: %s", type(exc).__name__, exc)
         raise

@@ -4,6 +4,19 @@ Esmerelda/backend/venv/
 # Moodle browser session
 Esmerelda/backend/moodle/browser_profile/
 
+# Local dev database and downloaded Moodle documents — real, often
+# personal course content, and a SQLite file that changes on every local
+# run/test. Production data lives under ESMERELDA_DATA_DIR instead (see
+# storage/paths.py) — these were previously committed to git by mistake
+# (added before this ignore rule existed; not removed from history by
+# this change — see BUILD_LOG.md for that decision). Kept out of the repo
+# going forward so no new commit accidentally includes real document
+# content or a stale/corrupted local database.
+Esmerelda/backend/storage/esmerelda.db
+Esmerelda/backend/storage/documents/
+backend/storage/esmerelda.db
+backend/storage/documents/
+
 # Environment variables
 .env
 Esmerelda/backend/.env
