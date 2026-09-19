@@ -17,7 +17,10 @@ Run with:
 
 import http.server
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 from pathlib import Path
 from urllib.parse import parse_qs
@@ -281,6 +284,208 @@ try:
     server_thread.join(timeout=5)
 except Exception as exc:
     check(f"5. Regression test setup itself failed unexpectedly: {exc}", False)
+
+
+# 6. Full post-login pipeline regression test: run_sync() end-to-end — login,
+# active-course discovery, course traversal, resource sync, and assignment
+# sync (via the dashboard Timeline block) — against a real local fake-Moodle
+# server that serves a dashboard, a course page, and a Timeline block, not
+# just a login form. This is specifically what proves/regression-guards the
+# real bug found and fixed in this change: _sync_course_assignments() used to
+# navigate to a bare relative path ("dashboard/"), which Playwright resolves
+# against whatever page was last visited (a course page, after resource
+# sync ran) rather than the site root — landing on a real Moodle 404 and
+# silently discovering 0 assignments even when login succeeded and active
+# courses were found. Run via a subprocess with ESMERELDA_DATA_DIR pointed
+# at an isolated temp directory, both so this doesn't write fake test data
+# into the real local development database, and because storage/database.py
+# reads ESMERELDA_DATA_DIR into a module-level DATABASE_URL at import time —
+# setting the env var after moodle.sync_service (and therefore
+# storage.database) is already imported in *this* process would have no
+# effect.
+_COURSE_NAME = "TEST101 Full Pipeline Test Course"
+_ASSIGNMENT_NAME = "Full Pipeline Test Assignment"
+
+_FULL_DASHBOARD_HTML = f"""
+<html><body>
+<div class="usermenu"><a href="/login/logout.php?sesskey=x">Log out</a></div>
+<p>Only courses in progress</p>
+<div><a href="/course/view.php?id=101">{_COURSE_NAME}</a></div>
+<p>Course overview</p>
+</body></html>
+"""
+
+_FULL_MY_PAGE_HTML = f"""
+<html><body>
+<div class="usermenu"><a href="/login/logout.php?sesskey=x">Log out</a></div>
+<section class="block_timeline">
+  <div>
+    <div><a href="/course/view.php?id=101">{_COURSE_NAME}</a></div>
+    <p>Friday, 20 September 2026 11:59</p>
+    <div><a href="/mod/assign/view.php?id=555">{_ASSIGNMENT_NAME} is due</a></div>
+  </div>
+</section>
+</body></html>
+"""
+
+_FULL_COURSE_PAGE_HTML = """
+<html><body>
+<div class="usermenu"><a href="/login/logout.php?sesskey=x">Log out</a></div>
+<a href="/mod/resource/view.php?id=999">Lecture Notes.pdf</a>
+</body></html>
+"""
+
+_FULL_ASSIGNMENT_PAGE_HTML = """
+<html><body>
+<div class="usermenu"><a href="/login/logout.php?sesskey=x">Log out</a></div>
+<p>Assignment page</p>
+</body></html>
+"""
+
+_full_valid_sessions: set[str] = set()
+
+
+class _FullFakeMoodleHandler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def _authenticated(self) -> bool:
+        cookie_header = self.headers.get("Cookie", "")
+        for part in cookie_header.split(";"):
+            if "=" in part:
+                key, _, value = part.strip().partition("=")
+                if key == "session" and value in _full_valid_sessions:
+                    return True
+        return False
+
+    def do_GET(self):
+        if not self._authenticated():
+            body = _LOGIN_PAGE_HTML
+        elif self.path.startswith("/my/") or self.path == "/my":
+            body = _FULL_MY_PAGE_HTML
+        elif self.path.startswith("/course/view.php"):
+            body = _FULL_COURSE_PAGE_HTML
+        elif self.path.startswith("/mod/assign/view.php"):
+            body = _FULL_ASSIGNMENT_PAGE_HTML
+        else:
+            body = _FULL_DASHBOARD_HTML
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.end_headers()
+        self.wfile.write(body.encode("utf-8"))
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        fields = parse_qs(self.rfile.read(length).decode("utf-8"))
+        if fields.get("username", [""])[0] == _TEST_USERNAME and fields.get("password", [""])[0] == _TEST_PASSWORD:
+            session_id = "full-sess-1"
+            _full_valid_sessions.add(session_id)
+            self.send_response(303)
+            self.send_header("Set-Cookie", f"session={session_id}; Path=/")
+            self.send_header("Location", "/")
+            self.end_headers()
+        else:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(_LOGIN_PAGE_HTML.encode("utf-8"))
+
+
+try:
+    full_httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FullFakeMoodleHandler)
+    full_server_thread = threading.Thread(target=full_httpd.serve_forever, daemon=True)
+    full_server_thread.start()
+    full_fake_moodle_url = f"http://127.0.0.1:{full_httpd.server_address[1]}/"
+
+    tmp_data_dir = tempfile.mkdtemp(prefix="esmerelda_sync_e2e_")
+    subprocess_script = (
+        "import logging; logging.basicConfig(level=logging.INFO, format='%(message)s'); "
+        "from storage.database import init_db; init_db(); "
+        "from moodle.sync_service import run_sync; "
+        "result = run_sync(); "
+        "print(f'RESULT:{result.courses_discovered}:{result.courses_synced}:"
+        "{result.resources_discovered}:{result.resources_synced}:"
+        "{result.assignments_discovered}:{result.assignments_synced}')"
+    )
+    env = dict(os.environ)
+    env["ESMERELDA_DATA_DIR"] = tmp_data_dir
+    env["MOODLE_USERNAME"] = _TEST_USERNAME
+    env["MOODLE_PASSWORD"] = _TEST_PASSWORD
+    env["MOODLE_URL"] = full_fake_moodle_url
+
+    proc = subprocess.run(
+        [sys.executable, "-c", subprocess_script],
+        cwd=str(Path(__file__).resolve().parent.parent),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    check("6. run_sync() subprocess exited successfully (exit code 0)", proc.returncode == 0)
+
+    result_line = next((line for line in proc.stdout.splitlines() if line.startswith("RESULT:")), None)
+    check("6b. run_sync() produced a real RESULT line", result_line is not None)
+    if result_line:
+        parts = [int(p) for p in result_line.removeprefix("RESULT:").split(":")]
+        courses_d, courses_p, resources_d, resources_p, assignments_d, assignments_p = parts
+        check(f"6c. Course discovered AND persisted (discovered={courses_d}, persisted={courses_p})", courses_d == 1 and courses_p == 1)
+        check(f"6d. Resource discovered AND persisted (discovered={resources_d}, persisted={resources_p})", resources_d == 1 and resources_p == 1)
+        check(
+            f"6e. Assignment discovered AND persisted (discovered={assignments_d}, persisted={assignments_p}) — "
+            "this is the exact scenario the relative-dashboard-URL bug silently zeroed out",
+            assignments_d == 1 and assignments_p == 1,
+        )
+
+    # logging.basicConfig()'s default stream is stderr, not stdout — only the
+    # subprocess's own print(f"RESULT:...") lands on stdout, so the log-line
+    # checks below look at stdout+stderr combined (real Render log capture
+    # combines both streams too, which is what these markers are meant to
+    # simulate being findable in).
+    combined_output = proc.stdout + proc.stderr
+    check(
+        "6f. Every requested stage log line appears in the real end-to-end run's output",
+        all(
+            marker in combined_output
+            for marker in [
+                "[SYNC DEBUG] _login returned",
+                "[SYNC DEBUG] dashboard/current page loaded",
+                "[SYNC DEBUG] active-course discovery started",
+                "[SYNC DEBUG] active courses discovered",
+                "[SYNC DEBUG] course traversal started",
+                "[SYNC DEBUG] visiting course URL",
+                "[SYNC DEBUG] sections/topics discovered",
+                "[SYNC DEBUG] assignments discovered per course",
+                "[SYNC DEBUG] resources discovered for",
+                "[SYNC DEBUG] database persistence started",
+                "[SYNC DEBUG] course written to DB",
+                "[SYNC DEBUG] assignment written to DB",
+                "[SYNC DEBUG] resource written to DB",
+                "[SYNC DEBUG] database commit completed",
+                "Moodle sync summary:",
+                "[SYNC DEBUG] sync completed",
+            ]
+        ),
+    )
+    check(
+        "6g. The explicit 'Moodle sync summary' line has the exact requested field names",
+        "courses_discovered=1" in combined_output
+        and "assignments_discovered=1" in combined_output
+        and "resources_discovered=1" in combined_output
+        and "courses_persisted=1" in combined_output
+        and "assignments_persisted=1" in combined_output
+        and "resources_persisted=1" in combined_output,
+    )
+    check(
+        "6h. Neither the real username nor password appears anywhere in the subprocess's stdout/stderr",
+        _TEST_USERNAME not in proc.stdout and _TEST_PASSWORD not in proc.stdout
+        and _TEST_USERNAME not in proc.stderr and _TEST_PASSWORD not in proc.stderr,
+    )
+
+    full_httpd.shutdown()
+    full_server_thread.join(timeout=5)
+    shutil.rmtree(tmp_data_dir, ignore_errors=True)
+except Exception as exc:
+    check(f"6. Full pipeline end-to-end test setup itself failed unexpectedly: {exc}", False)
 
 
 print("\n--- Summary ---")

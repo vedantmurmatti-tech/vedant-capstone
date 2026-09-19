@@ -1,5 +1,6 @@
 import logging
 import os
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -24,7 +25,13 @@ from storage.database import init_db
 # sync/diagnostic code was even working. basicConfig() is a no-op if the
 # root logger already has a handler, so this is safe to call
 # unconditionally at import time.
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    stream=sys.stdout,  # explicit — logging's own default is stderr, which most log
+                        # viewers capture too, but pinning this avoids any ambiguity
+                        # about where these lines actually land.
+)
 
 logger = logging.getLogger("esmerelda.startup")
 
