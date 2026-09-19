@@ -676,12 +676,37 @@ def _find_additional_section_pages(page, course_url: str, moodle_url: str) -> li
         return []
 
 
-def _sync_course_resources(page, course_url: str, course_name: str, moodle_url: str) -> tuple[int, int]:
-    """Returns (discovered, persisted) — discovered is every link that
-    passed the ignore-filters below (a real candidate resource);
-    persisted is only those where storage.crud.save_resource() actually
-    returned a saved row (it returns None, logging its own reason, when
-    the course row itself couldn't be found — see storage/crud.py).
+def _sync_course_resources(
+    page, course_url: str, course_name: str, moodle_url: str, *, probe_multi_page_display: bool = True
+) -> tuple[int, int, bool]:
+    """Returns (discovered, persisted, found_multi_page_sections).
+
+    discovered/persisted: discovered is every link that passed the
+    ignore-filters below (a real candidate resource); persisted is only
+    those where storage.crud.save_resource() actually returned a saved
+    row (it returns None, logging its own reason, when the course row
+    itself couldn't be found — see storage/crud.py).
+
+    found_multi_page_sections: whether this course actually turned out to
+    use a multi-page course display (see _find_additional_section_pages).
+    run_sync() uses this to stop bothering to probe for it on later
+    courses in the same sync once the first course shows it's not in use
+    — see probe_multi_page_display below for why that matters.
+
+    probe_multi_page_display: when False, skips the multi-page-display
+    check entirely for this course. This exists specifically to bound a
+    real risk: probing every single active course for extra section
+    pages (up to _MAX_SECTION_PAGES_PER_COURSE each) meaningfully
+    increases how many pages/requests one sync makes and how long it
+    takes — and this project has already reproduced, concretely, a
+    session being lost partway through a sync before assignment
+    discovery could run (see BUILD_LOG.md). Course-display mode
+    ("show all sections on one page" vs "one section per page") is
+    normally a site-wide or course-format-wide setting, not something
+    that varies course-by-course within the same Moodle install — so
+    run_sync() checks it on the first course only, and skips the check
+    entirely for the rest once it's confirmed not to apply, bounding the
+    worst case to "one course pays this cost, not every course."
 
     moodle_url resolves each resource's raw href to an absolute URL
     before it's stored (see _detect_active_courses()'s docstring for why
@@ -702,8 +727,10 @@ def _sync_course_resources(page, course_url: str, course_name: str, moodle_url: 
     seen_urls: set[str] = set()
     discovered, persisted, failed = _scan_page_for_resources(page, course_name, moodle_url, seen_urls)
 
-    additional_sections = _find_additional_section_pages(page, course_url, moodle_url)
-    if additional_sections:
+    additional_sections = _find_additional_section_pages(page, course_url, moodle_url) if probe_multi_page_display else []
+    if not probe_multi_page_display:
+        logger.info("[SYNC DEBUG] '%s': skipping multi-page-display probe (already ruled out on an earlier course this sync)", course_name)
+    elif additional_sections:
         logger.info(
             "[SYNC DEBUG] '%s' uses a multi-page course display — %d additional section page(s) found, visiting each",
             course_name, len(additional_sections),
@@ -725,7 +752,7 @@ def _sync_course_resources(page, course_url: str, course_name: str, moodle_url: 
         "[SYNC DEBUG] resources discovered for '%s': discovered=%d persisted=%d failed=%d",
         course_name, discovered, persisted, failed,
     )
-    return discovered, persisted
+    return discovered, persisted, bool(additional_sections)
 
 
 def _extract_due_date(text: str, assignment_name: str) -> datetime | None:
@@ -799,6 +826,31 @@ def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) 
         )
         return 0, 0
     logger.info("[SYNC DEBUG] dashboard/current page loaded: url=%s title=%r", page.url, _safe_title(page))
+
+    # Root cause of a real regression (see BUILD_LOG.md): by the time this
+    # function runs, the session may have been lost since _login() first
+    # confirmed it — e.g. Moodle-side session expiry, or simply enough
+    # elapsed time/request volume from resource sync (which now visits
+    # more pages per course than before, see _sync_course_resources()) to
+    # trip something server-side. The previous version had no way to tell
+    # "genuinely no Timeline block" apart from "we got bounced back to the
+    # login page" — both silently returned 0 assignments with a message
+    # that explicitly (and, in the second case, wrongly) said this wasn't
+    # a sign of a real problem. Checking for the login form here — the
+    # same, already-proven DOM signal _login() itself uses — makes this
+    # an explicit, loud MoodleSyncError instead of a silent, misleading 0.
+    if _has_login_form(page):
+        logger.error(
+            "[SYNC DEBUG] landed on Moodle's login form while navigating to the dashboard for assignment "
+            "discovery — the session was lost sometime after _login() succeeded (Moodle-side expiry, or "
+            "possibly the added request volume from resource sync). This is NOT the same as 'no Timeline "
+            "block found' and must not be silently reported as 0 assignments discovered."
+        )
+        raise MoodleSyncError(
+            "Session was lost before assignment discovery could run (landed back on Moodle's login page "
+            "when navigating to the dashboard). Login itself succeeded earlier in this same sync — see the "
+            "diagnostics/logs for the login stage — but the session did not survive until assignment sync."
+        )
 
     logger.info("[SYNC DEBUG] assignment discovery started (via dashboard Timeline block)")
     timeline = page.locator("section.block_timeline, .block_timeline").first
@@ -942,6 +994,7 @@ def run_sync(run_id: int | None = None) -> SyncResult:
 
                 logger.info("[SYNC DEBUG] course traversal started: %d course(s) to visit", len(active_courses))
                 logger.info("[SYNC DEBUG] database persistence started")
+                should_probe_multi_page = True
                 for course in active_courses:
                     moodle_id = _course_moodle_id(course["url"])
                     if not moodle_id:
@@ -954,11 +1007,15 @@ def run_sync(run_id: int | None = None) -> SyncResult:
                     result.course_names.append(course["name"])
                     logger.info("[SYNC DEBUG] course written to DB: name=%r moodle_id=%s", course["name"], moodle_id)
 
-                    course_resources_discovered, course_resources_persisted = _sync_course_resources(
-                        page, course["url"], course["name"], moodle_url
+                    course_resources_discovered, course_resources_persisted, found_multi_page = _sync_course_resources(
+                        page, course["url"], course["name"], moodle_url, probe_multi_page_display=should_probe_multi_page
                     )
                     result.resources_discovered += course_resources_discovered
                     result.resources_synced += course_resources_persisted
+                    if should_probe_multi_page and not found_multi_page:
+                        # Bounds the added-request-volume risk from the multi-page-display probe
+                        # (see _sync_course_resources()'s docstring) to at most one course per sync.
+                        should_probe_multi_page = False
                 result.courses_synced = len(result.course_names)
 
                 if active_courses:

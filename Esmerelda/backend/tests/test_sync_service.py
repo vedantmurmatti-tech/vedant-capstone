@@ -354,6 +354,17 @@ _FULL_ASSIGNMENT_PAGE_HTML = """
 """
 
 _full_valid_sessions: set[str] = set()
+# When True, the session is force-invalidated the moment a course page has
+# been visited once — simulating a session becoming invalid sometime during
+# or right after resource sync, before assignment sync's own dashboard
+# navigation runs. Deliberately not tied to an exact request count (which
+# would be fragile to any future change in how many requests resource sync
+# happens to make) — this instead robustly captures "session died somewhere
+# in the resource-sync phase," which is the actual regression scenario.
+# False (the default) means "never expire" — the normal case used by every
+# other test in this file.
+_full_expire_after_course_page_visited = False
+_full_course_page_visited = False
 
 
 class _FullFakeMoodleHandler(http.server.BaseHTTPRequestHandler):
@@ -361,13 +372,17 @@ class _FullFakeMoodleHandler(http.server.BaseHTTPRequestHandler):
         pass
 
     def _authenticated(self) -> bool:
+        global _full_course_page_visited
         cookie_header = self.headers.get("Cookie", "")
-        for part in cookie_header.split(";"):
-            if "=" in part:
-                key, _, value = part.strip().partition("=")
-                if key == "session" and value in _full_valid_sessions:
-                    return True
-        return False
+        has_valid_cookie = any(
+            part.strip().startswith("session=") and part.strip().partition("=")[2] in _full_valid_sessions
+            for part in cookie_header.split(";")
+        )
+        if _full_expire_after_course_page_visited and _full_course_page_visited:
+            return False
+        if has_valid_cookie and self.path.startswith("/course/view.php") and "section=" not in self.path:
+            _full_course_page_visited = True
+        return has_valid_cookie
 
     def do_GET(self):
         if not self._authenticated():
@@ -522,6 +537,82 @@ try:
     shutil.rmtree(tmp_data_dir, ignore_errors=True)
 except Exception as exc:
     check(f"6. Full pipeline end-to-end test setup itself failed unexpectedly: {exc}", False)
+
+
+# 7. Regression test for "resources sync but assignments silently return to
+# zero" — reproduces a session becoming invalid sometime during/after
+# resource sync (this is exactly what was reproduced manually in this
+# session before writing any fix: a real headless-Chromium run against a
+# session-expiring fake server that landed on the login page while
+# navigating to the dashboard for assignment discovery, and, before this
+# fix, silently reported 0 assignments discovered with a message claiming
+# that wasn't a sign of a problem). Confirms the fix: this now raises a
+# clear, diagnostic MoodleSyncError instead of a silent, misleading 0 — and
+# that the resources already discovered before the session died are still
+# genuinely persisted, i.e. no data is lost, only the sync run is correctly
+# marked as failed rather than falsely "successful."
+try:
+    _full_valid_sessions.clear()
+    _full_expire_after_course_page_visited = True
+    _full_course_page_visited = False
+
+    regression_httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FullFakeMoodleHandler)
+    regression_server_thread = threading.Thread(target=regression_httpd.serve_forever, daemon=True)
+    regression_server_thread.start()
+    regression_moodle_url = f"http://127.0.0.1:{regression_httpd.server_address[1]}/"
+
+    regression_data_dir = tempfile.mkdtemp(prefix="esmerelda_sync_regression_")
+    regression_script = (
+        "import logging; logging.basicConfig(level=logging.INFO, format='%(message)s')\n"
+        "from storage.database import init_db; init_db()\n"
+        "from moodle.sync_service import run_sync, MoodleSyncError\n"
+        "try:\n"
+        "    result = run_sync()\n"
+        "    print(f'UNEXPECTED_SUCCESS:{result.assignments_discovered}:{result.resources_discovered}')\n"
+        "except MoodleSyncError as exc:\n"
+        "    print(f'CLEAN_ERROR:{exc}')\n"
+    )
+    env = dict(os.environ)
+    env["ESMERELDA_DATA_DIR"] = regression_data_dir
+    env["MOODLE_USERNAME"] = _TEST_USERNAME
+    env["MOODLE_PASSWORD"] = _TEST_PASSWORD
+    env["MOODLE_URL"] = regression_moodle_url
+
+    regression_proc = subprocess.run(
+        [sys.executable, "-c", regression_script],
+        cwd=str(Path(__file__).resolve().parent.parent),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    regression_output = regression_proc.stdout + regression_proc.stderr
+
+    check(
+        "7. A session lost during/after resource sync now raises a clear MoodleSyncError "
+        "(the regression this step fixes) instead of silently reporting 0 assignments",
+        "CLEAN_ERROR:" in regression_output and "UNEXPECTED_SUCCESS" not in regression_output,
+    )
+    check(
+        "7b. The raised error's message clearly identifies session loss, not a generic/misleading cause",
+        "Session was lost" in regression_output,
+    )
+    check(
+        "7c. Resources discovered before the session died were still genuinely persisted to the database "
+        "(the fix reports the failure honestly — it doesn't also throw away data that was already saved)",
+        "resource written to DB" in regression_output and "Lecture Notes.pdf" in regression_output,
+    )
+    check(
+        "7d. Neither the real username nor password appears anywhere in this subprocess's output either",
+        _TEST_USERNAME not in regression_output and _TEST_PASSWORD not in regression_output,
+    )
+
+    regression_httpd.shutdown()
+    regression_server_thread.join(timeout=5)
+    shutil.rmtree(regression_data_dir, ignore_errors=True)
+    _full_expire_after_course_page_visited = False
+except Exception as exc:
+    check(f"7. Session-loss regression test setup itself failed unexpectedly: {exc}", False)
 
 
 print("\n--- Summary ---")
