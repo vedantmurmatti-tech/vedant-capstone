@@ -749,7 +749,8 @@ try:
         and "document download 2/3" in combined_output
         and "document download 3/3" in combined_output
         and "succeeded: resource_id=" in combined_output
-        and "SKIPPED (already downloaded)" in combined_output
+        and "document download skipped: resource_id=" in combined_output
+        and "reason=already_downloaded" in combined_output
         and "failed (no file found or save error)" in combined_output
         and "document sync summary:" in combined_output
         and "documents_downloaded=2" in combined_output
