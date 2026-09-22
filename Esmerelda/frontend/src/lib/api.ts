@@ -107,6 +107,37 @@ export async function getStudentName(): Promise<string> {
   return "Vedant";
 }
 
+export class SpeechUnavailableError extends Error {
+  constructor(reason: string) {
+    super(`Esmerelda's voice isn't available right now — ${reason}`);
+    this.name = "SpeechUnavailableError";
+  }
+}
+
+/**
+ * Sends text to POST /api/speech and returns a playable object URL for the
+ * generated audio (see backend/api/tts.py). Caller is responsible for
+ * revoking the URL (`URL.revokeObjectURL`) once done with it.
+ */
+export async function synthesizeSpeech(text: string): Promise<string> {
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/api/speech`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+  } catch {
+    throw new SpeechUnavailableError(`couldn't reach ${API_BASE}.`);
+  }
+
+  if (!res.ok) {
+    throw new SpeechUnavailableError(`request failed with status ${res.status}.`);
+  }
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
 export class ChatUnavailableError extends Error {
   constructor(reason: string) {
     super(`Esmerelda's AI backend isn't reachable right now — ${reason}`);

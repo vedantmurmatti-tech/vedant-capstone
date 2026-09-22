@@ -1,7 +1,7 @@
 import logging
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from . import queries
@@ -15,6 +15,7 @@ from .schemas import (
     DashboardSummaryOut,
     DocumentOut,
     ResourceOut,
+    SpeechRequestIn,
     SyncStatusOut,
     SyncTriggerOut,
 )
@@ -211,3 +212,14 @@ def get_dashboard_summary(db: Session = Depends(get_db)):
 @router.post("/chat", response_model=ChatResponseOut)
 async def chat(payload: ChatRequestIn, db: Session = Depends(get_db)):
     return await handle_chat_message(db, payload.message)
+
+
+@router.post("/speech")
+def synthesize_speech(payload: SpeechRequestIn):
+    from .tts import TtsUnavailableError, synthesize_speech as tts_synthesize
+
+    try:
+        audio = tts_synthesize(payload.text)
+    except TtsUnavailableError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return Response(content=audio, media_type="audio/wav")

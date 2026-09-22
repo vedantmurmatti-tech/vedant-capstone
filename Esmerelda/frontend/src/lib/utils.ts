@@ -63,6 +63,29 @@ export function getAssignmentUrgency(dueDate: string | null): "overdue" | "due-s
   return "upcoming";
 }
 
+/**
+ * Strips the small set of markdown syntax ChatMarkdown.tsx actually
+ * renders (fenced/inline code, bold/italics, headings, list markers,
+ * links) down to plain, speakable text for the TTS endpoint. Not a full
+ * markdown parser — just enough to avoid literally reading out `**`,
+ * backticks, `#`, `- `, or `[label](url)` syntax aloud.
+ */
+export function stripMarkdownForSpeech(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/\*(.+?)\*/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/^[-*]\s+/gm, "")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/[_~]/g, "")
+    .replace(/\n{2,}/g, ". ")
+    .replace(/\n/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 export function initialsFromName(name: string): string {
   const parts = name.trim().split(/\s+/);
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
