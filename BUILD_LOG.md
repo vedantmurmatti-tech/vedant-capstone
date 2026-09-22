@@ -1380,4 +1380,38 @@ Inspected the real local dev database directly (`storage/esmerelda.db`) before a
 
 ---
 
+## 2026-09-22 (Voice — Step 2: Esmerelda's chat replies are spoken automatically)
+
+- **Time**: 2026-09-22, continuing the same day as Step 1 above. Scope deliberately narrow per instruction: only wiring the existing `POST /api/speech` (from Step 1) into the chat flow so the final assistant reply is spoken automatically. **No backend files were touched at all this step** — `synthesizeSpeech()` and `POST /api/speech` are reused exactly as they were. Moodle sync, assignment logic, document downloading, the orb/circular animation (`AiCore.tsx`, untouched), and the AI response generation logic (`chat_agent.py`, `groq_agent.py`, etc., untouched) were not modified.
+
+### What changed
+
+- **New hook: `frontend/src/lib/useEsmereldaSpeech.ts`** — `speak(text)`, `stop()`, and an `isSpeaking` boolean, built entirely on top of the existing `synthesizeSpeech()` from `lib/api.ts` (no second TTS implementation). `speak()`:
+  - strips markdown via a new `stripMarkdownForSpeech()` (`lib/utils.ts`) before sending text to the backend — removes fenced/inline code, `**bold**`/`*italics*`, `#` headings, `- `/`* ` list markers, and `[label](url)` links (kept as just the label), collapsing blank-line paragraph breaks into a period-and-space so multi-paragraph replies don't run on;
+  - always stops whatever is currently playing (or still being fetched) **first**, using a monotonically-incrementing request id to invalidate any in-flight `synthesizeSpeech()` call that a newer `speak()` call has superseded — so a slow first request can never start playing audio after a second, faster one already has (verified directly — see Testing);
+  - swallows every possible failure (`synthesizeSpeech()` throwing, or `HTMLAudioElement.play()` rejecting) without re-throwing, so a voice-provider outage can never surface as a chat-breaking error;
+  - revokes each blob URL it's done with (`URL.revokeObjectURL`), and stops/cleans up on unmount.
+- **`frontend/src/pages/Chat.tsx`**: after a successful `sendChatMessage()` call appends the assistant's reply bubble to `messages`, `speak(res.reply)` is called on that same reply text — nothing else. It is never called for: the user's own message, the "Thinking…" pending state, the `catch` branch's `unavailable` error bubble, or any of `res.assignments`/`res.sources`/`res.followUps` (all structured data, never sent to TTS). `isSpeaking` is returned by the hook but intentionally unused by any UI yet — no visual indicator or animation was added, per instruction.
+- **`frontend/src/lib/utils.ts`**: added `stripMarkdownForSpeech()`, a small regex-based cleaner (not a full markdown parser) scoped to exactly the markdown syntax `ChatMarkdown.tsx` actually renders.
+
+### Testing
+
+- `npx tsc -b` and `npm run build` (Vite production build) — both clean.
+- **Real browser, real backend, real Kokoro Space** (Playwright-driven Chromium against `vite` dev server + `uvicorn`, not a mock): sent a real chat message through the real Groq-backed `/api/chat`; the reply rendered, and immediately afterward the browser made a real `POST /api/speech` request on its own, with no manual trigger — confirmed from the backend's own request log. On this run the Kokoro Space itself returned a real "ZeroGPU runs limit exceeded" error (the public Space's own shared-quota limit, hit from repeated testing) — the chat reply stayed on screen and fully usable throughout, since the failure happened after the chat response had already succeeded and rendered. This was a genuine, unplanned instance of requirement 5 ("if TTS fails, chat must still work"), not a simulated one.
+- **Real browser, mocked `/api/chat` and `/api/speech`** (Playwright, to get deterministic timing/failure control that a live third-party Space and a live LLM API can't reliably offer test-to-test):
+  - Instrumented `HTMLMediaElement.prototype.play`/`.pause` at the page level to log every real call the app makes. Sent one message, then — while its (deliberately slowed) `/api/speech` response was still in flight — sent a second message whose `/api/speech` response resolved first. Captured log, in order: `play` (reply 1's audio) → `pause` (reply 1's audio, stopped by the second `speak()` call) → `play` (reply 2's audio). This directly confirms requirement 4 ("if a new response starts while audio is playing, stop the previous audio") and that the interrupted first request never played after being superseded, using the app's real runtime calls, not an assumption about the code.
+  - Forced `/api/speech` to return `502` for every request: the first chat reply rendered normally, a second message was then sent and its reply also rendered normally — chat remained fully functional across two full turns despite 100% TTS failure, with only a same-origin "Failed to load resource: 502" console entry (an expected network log, not a thrown/uncaught error — no `pageerror` events were recorded).
+- No frontend automated test runner exists in this project yet (`package.json` has no test script) — this step didn't add one; the browser-driven checks above were run manually via a scratch Playwright script (not committed) rather than as a permanent test file, consistent with the frontend project's existing test posture.
+- Backend: unaffected — no backend files changed this step. Step 1's `pytest` result stands (12 passed; 5 pre-existing failures in `test_groq_agent.py`, unrelated, caused by a missing `pytest-asyncio` plugin in the local venv, present before this project's changes).
+
+### Remaining limitations
+
+- Still depends on the same free-tier `Remsky/Kokoro-TTS-Zero` Space as Step 1, including its shared `ZeroGPU` quota — observed directly during this step's own testing to be a real, hit-able limit under repeated use, not just a theoretical one. `speak()` handles this the same way it handles any other TTS failure: silently, without affecting the chat reply already on screen.
+- `isSpeaking` exists on the hook but drives no UI yet (no speaking indicator, no stop button) — intentionally deferred, per instruction, to a future step alongside the orb/audio-visualization work.
+- `stripMarkdownForSpeech()` is scoped to the markdown syntax this project's own `ChatMarkdown.tsx` renders, not general-purpose markdown — sufficient for this project's replies, not a drop-in for arbitrary markdown text.
+
+**Files changed this step**: `frontend/src/lib/useEsmereldaSpeech.ts` (new), `frontend/src/lib/utils.ts` (one new function), `frontend/src/pages/Chat.tsx` (wired `speak()` into the existing success path). No backend files changed.
+
+---
+
 <!-- Add the next entry above this line, newest at the top or bottom — just be consistent -->

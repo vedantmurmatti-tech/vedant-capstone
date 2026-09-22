@@ -8,6 +8,7 @@ import { AiCore } from "@/components/core/AiCore";
 import { CommandInput } from "@/components/ui/CommandInput";
 import { ChatMarkdown } from "@/components/ui/ChatMarkdown";
 import { formatDateTime, getAssignmentUrgency, cn } from "@/lib/utils";
+import { useEsmereldaSpeech } from "@/lib/useEsmereldaSpeech";
 
 function newId(): string {
   return Math.random().toString(36).slice(2, 10);
@@ -21,6 +22,9 @@ export default function Chat() {
   const [reachable, setReachable] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const consumedInitial = useRef(false);
+  // isSpeaking isn't consumed by any UI yet (no visual animation for this
+  // step) — kept available on the hook for the next step to use.
+  const { speak } = useEsmereldaSpeech();
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -66,6 +70,11 @@ export default function Chat() {
           documents: res.documents,
         },
       ]);
+      // Speaks only the final reply text — never the user's message, the
+      // "Thinking…" state above, or the error branch below. speak() stops
+      // any still-playing previous response first and never throws, so a
+      // voice failure here can't affect the chat response already shown.
+      void speak(res.reply);
     } catch (err) {
       setReachable(false);
       setMessages((prev) => [
