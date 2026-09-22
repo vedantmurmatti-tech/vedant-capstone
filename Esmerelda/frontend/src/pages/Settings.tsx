@@ -1,9 +1,33 @@
-import { Construction, Mail, User } from "lucide-react";
+import { useRef, useState } from "react";
+import { Construction, Mail, User, Volume2 } from "lucide-react";
 import { useAsync } from "@/lib/useAsync";
-import { getStudentName } from "@/lib/api";
+import { getStudentName, synthesizeSpeech } from "@/lib/api";
+
+const TEST_SENTENCE = "Good evening, Vedant. How may I assist you?";
 
 export default function Settings() {
   const { data: name } = useAsync(getStudentName, []);
+  const [voiceState, setVoiceState] = useState<"idle" | "loading" | "error">("idle");
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const objectUrlRef = useRef<string | null>(null);
+
+  async function testVoice() {
+    setVoiceState("loading");
+    setVoiceError(null);
+    try {
+      const url = await synthesizeSpeech(TEST_SENTENCE);
+      if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = url;
+      if (!audioRef.current) audioRef.current = new Audio();
+      audioRef.current.src = url;
+      await audioRef.current.play();
+      setVoiceState("idle");
+    } catch (err) {
+      setVoiceState("error");
+      setVoiceError(err instanceof Error ? err.message : "Couldn't play Esmerelda's voice.");
+    }
+  }
 
   return (
     <div className="max-w-2xl space-y-6">
@@ -26,6 +50,25 @@ export default function Settings() {
             <span className="ml-auto truncate text-sm text-warm-50">student.design1@flame.edu.in</span>
           </div>
         </div>
+      </section>
+
+      <section className="rounded-2xl border border-graphite-700/60 bg-graphite-850/40 p-5">
+        <h3 className="mb-4 text-xs font-medium uppercase tracking-wide text-graphite-500">Voice (test)</h3>
+        <p className="mb-3 text-sm text-graphite-400">
+          Plays a test sentence through Esmerelda's voice. Responses aren't spoken automatically yet.
+        </p>
+        <button
+          type="button"
+          onClick={testVoice}
+          disabled={voiceState === "loading"}
+          className="flex items-center gap-2 rounded-xl border border-graphite-600/70 bg-graphite-850/70 px-3 py-2 text-sm font-medium text-graphite-200 transition-colors hover:border-graphite-500 hover:bg-graphite-800 disabled:opacity-60"
+        >
+          <Volume2 size={15} />
+          {voiceState === "loading" ? "Generating…" : "Test Esmerelda Voice"}
+        </button>
+        {voiceState === "error" && voiceError && (
+          <p className="mt-2 text-xs text-status-critical">{voiceError}</p>
+        )}
       </section>
 
       <section className="flex items-start gap-3 rounded-2xl border border-graphite-700/60 bg-graphite-850/40 p-5">

@@ -1345,4 +1345,39 @@ Inspected the real local dev database directly (`storage/esmerelda.db`) before a
 
 ---
 
+## 2026-09-22 (Voice — Step 1: Esmerelda can speak, via a manual test button)
+
+- **Time**: 2026-09-22. Deliberately small, per instruction: only text-to-speech generation and a manual test control were added. The orb/circular animation, audio visualization, Moodle sync, assignments, document downloading, and the existing chat-agent logic were **not touched** — `AiCore.tsx`, `moodle/`, `chat_agent.py`, and `routes.py`'s existing endpoints are unchanged except for one new route appended at the end of the file. Esmerelda does not speak her chat replies automatically yet — this step only wires up a one-off "Test Esmerelda Voice" button.
+
+### Backend
+
+- **New module: `backend/api/tts.py`** — `synthesize_speech(text, voice="af_sarah") -> bytes`, returning raw WAV audio, and a single `TtsUnavailableError` that collapses every possible failure (network error, Space asleep, API shape change, empty text) into one clean, backend-detail-free message. The provider is isolated behind two module-level constants (`_SPACE_ID`, `_API_NAME`) plus this one function's body — replacing Kokoro with a different TTS provider later touches only this file, not `routes.py` or the frontend, since both only ever deal in raw audio bytes.
+- **New route: `POST /api/speech`** (`backend/api/routes.py`) — takes `{"text": "..."}` (validated 1–2000 chars via a new `SpeechRequestIn` schema, same pattern as the existing `ChatRequestIn`), returns the generated audio as `audio/wav`, or a 502 with `TtsUnavailableError`'s message on failure. No new database access, no change to any existing route.
+- **Provider used: `Remsky/Kokoro-TTS-Zero`, a public Hugging Face Space, called via `gradio_client` (not webpage scraping).** The task named `hexgrad/Kokoro-TTS` specifically, but that Space's own `/config` reports `"show_api": false` (confirmed directly by fetching it, not assumed) — its Gradio API is disabled by its owner, so `gradio_client` has nothing to call (`view_api()` returns zero named/unnamed endpoints against it). `Remsky/Kokoro-TTS-Zero` runs the same underlying Kokoro model and exposes the same voice set (including `af_sarah`) through a real, callable endpoint, `/generate_speech_from_ui(text, voice_names, speed)`, confirmed by inspecting its `/config` dependencies and by an actual end-to-end call that returned a valid WAV file. No API key is required — the Space is public.
+- **Voice**: `af_sarah` (a stable Kokoro English female voice, present in the Space's own `voice_names` choice list) is the module's default, passed as a single-item list per the endpoint's own signature. No pitch/filter effects are applied — the raw WAV bytes returned by the Space are passed straight through.
+- **Configuration**: none required — no API key, no new environment variable. `gradio_client==2.7.1` added to `backend/requirements.txt`.
+
+### Frontend
+
+- **New API function: `synthesizeSpeech(text)` in `frontend/src/lib/api.ts`** — `POST`s to `/api/speech` and returns a `URL.createObjectURL` for the returned audio blob (caller owns revoking it), plus a `SpeechUnavailableError` mirroring the existing `ChatUnavailableError` pattern for a reachability failure.
+- **New control: "Test Esmerelda Voice" on `frontend/src/pages/Settings.tsx`** (a new "Voice (test)" section, in the same style as the existing Profile section) — on click, sends the fixed test sentence "Good evening, Vedant. How may I assist you?" to the backend, receives the generated audio, and plays it via an `HTMLAudioElement`. Shows "Generating…" while pending and a plain error message inline on failure. Nothing elsewhere in the app calls this automatically — `Chat.tsx` and every other page are unchanged.
+
+### Testing
+
+- Directly exercised `api.tts.synthesize_speech()` in a real Python REPL against the real local venv: returned 162,044 bytes of genuine RIFF/WAVE audio (16-bit PCM mono, 24kHz) for the exact test sentence.
+- Started the real FastAPI app (`uvicorn main:app`) locally and `curl`'d `POST /api/speech` directly: `200 audio/wav`, 162,044 bytes, confirmed as a valid WAVE file — the full **frontend-shaped request → FastAPI → Kokoro Space → audio** path was exercised for real, end to end (browser playback itself was not separately screenshotted, but the same `Audio.play()` API is standard and the blob is a genuine playable WAV).
+- Backend suite: `python -m pytest tests -q` — 12 passed, 5 pre-existing failures in `test_groq_agent.py`, all failing with `"async def functions are not natively supported"` (no `pytest-asyncio` plugin installed in this venv) — unrelated to this change, present before it, and not touched by it.
+- Frontend: `npx tsc -b` — clean, no errors.
+
+### Limitations of the public Hugging Face Space
+
+- **Free-tier Space, not a dedicated API** — no uptime, latency, or rate-limit guarantee. A Space that has gone to sleep (Spaces on the free tier sleep after inactivity) adds a real cold-start delay to the first request, and could time out; `TtsUnavailableError` surfaces this as a generic "voice provider unavailable" rather than a crash, but doesn't retry or warm it up.
+- **Depends on a third party's Space staying up and API-enabled** at all — `hexgrad/Kokoro-TTS` itself already changed (API disabled) between when the task was written and now, which is exactly the kind of drift this module's isolated, easily-swappable provider boundary is meant to absorb, not prevent.
+- **No authentication** — this is what makes it free and key-less, but also means no SLA and no guarantee the Space owner won't disable its API next, same as happened to the originally-named Space.
+- Output is a single, non-streaming WAV per request — fine for a short test sentence or a chat reply, but not suited to long-form narration without chunking (out of scope for this step).
+
+**Files changed this step**: `backend/api/tts.py` (new), `backend/api/routes.py` (one new route), `backend/api/schemas.py` (one new schema), `backend/requirements.txt` (one new dependency), `frontend/src/lib/api.ts` (one new function + error class), `frontend/src/pages/Settings.tsx` (one new section).
+
+---
+
 <!-- Add the next entry above this line, newest at the top or bottom — just be consistent -->
