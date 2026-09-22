@@ -22,9 +22,7 @@ export default function Chat() {
   const [reachable, setReachable] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const consumedInitial = useRef(false);
-  // isSpeaking isn't consumed by any UI yet (no visual animation for this
-  // step) — kept available on the hook for the next step to use.
-  const { speak } = useEsmereldaSpeech();
+  const { speak, stop: stopSpeaking, isSpeaking, energyRef } = useEsmereldaSpeech();
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -93,6 +91,7 @@ export default function Chat() {
   }
 
   function handleNewConversation() {
+    stopSpeaking();
     setMessages([]);
     setInput("");
   }
@@ -101,18 +100,22 @@ export default function Chat() {
     <div className="flex h-[calc(100vh-8.5rem)] flex-col">
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <AiCore size="sm" state={pending ? "processing" : "idle"} />
+          <AiCore
+            size="sm"
+            state={pending ? "processing" : isSpeaking ? "active" : "idle"}
+            energyRef={energyRef}
+          />
           <div>
             <h2 className="font-display text-lg font-semibold tracking-tight text-warm-50">Esmerelda</h2>
             <p className="flex items-center gap-1.5 text-xs text-graphite-500">
               <span
                 className={cn(
                   "size-1.5 rounded-full",
-                  pending ? "animate-pulse bg-cyan-400" : reachable ? "bg-status-success" : "bg-status-critical"
+                  pending || isSpeaking ? "animate-pulse bg-cyan-400" : reachable ? "bg-status-success" : "bg-status-critical"
                 )}
               />
-              {pending ? "Thinking…" : reachable ? "Online" : "Unreachable"} · Gemini, grounded in your real Moodle
-              data
+              {pending ? "Thinking…" : isSpeaking ? "Speaking…" : reachable ? "Online" : "Unreachable"} · Gemini,
+              grounded in your real Moodle data
             </p>
           </div>
         </div>
