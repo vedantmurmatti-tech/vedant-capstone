@@ -1492,4 +1492,120 @@ This is exactly what let this session directly confirm, from real console output
 
 ---
 
+## 2026-09-22 (TTS reliability investigation: the real bottleneck is the free Kokoro Space's own shared quota, plus one real self-inflicted latency bug)
+
+- **Time**: 2026-09-22, continuing the same day as the Voice steps above. Scope, per instruction: backend `api/tts.py` only. The frontend speech/orb implementation (`useEsmereldaSpeech.ts`, `AiCore.tsx`, `Chat.tsx`) was **not touched** — this entry is purely about making the backend TTS call itself reliable and legible, not about anything downstream of it.
+
+### What was investigated
+
+Traced the full backend call path (`routes.py`'s `POST /api/speech` → `api/tts.py`'s `synthesize_speech()` → `gradio_client.Client.predict()` → the `Remsky/Kokoro-TTS-Zero` Space) and ran it directly, repeatedly, both as a standalone script and through the real running FastAPI server, with full logging, to see exactly where time was going and exactly why calls failed.
+
+### Root cause 1 (real, self-inflicted bug — fixed): a brand-new `gradio_client.Client` was constructed on every single call
+
+The original `synthesize_speech()` called `Client(_SPACE_ID)` fresh inside the function body, every time it ran. Constructing a `Client` is not cheap — it makes several real, sequential HTTP round trips (resolving the Space id via `huggingface.co/api/spaces/...`, following its redirect to the canonical owner casing, fetching the Space's `/config`, fetching its full API schema via `/gradio_api/info`). Measured directly against the real Space: **this alone took 6–13 seconds**, paid again on *every* request, not just the first — this is almost certainly the dominant cause of "the first response takes a long time" being generalized to "every response is slow," and made the "subsequent responses" case strictly worse than it needed to be even when the Space itself was healthy.
+
+**Fix**: the `Client` is now built exactly once per process (a lazily-initialized module-level singleton, guarded by a `threading.Lock` since FastAPI can run this route concurrently across threadpool threads) and reused for every subsequent call. Verified directly: across 4 consecutive real `POST /api/speech` requests, the "Space client initializing" log line appeared exactly **once** (10.65s), and every later request skipped straight to submitting the job — even though every one of those 4 requests still failed (see Root Cause 2 below), the fix's effect on latency is real and measured, not theoretical.
+
+### Root cause 2 (the actual current bottleneck — not fixable here, reported per instruction rather than worked around): `Remsky/Kokoro-TTS-Zero`'s shared ZeroGPU quota is exhausted
+
+Every one of this session's real calls to the Space — both in this investigation and repeatedly across the earlier Steps 1–3 testing sessions the same day — has been failing with the Space's own real, verbatim error:
+
+> `You have exceeded your ZeroGPU runs limit. Authenticate with a Hugging Face token for more quota - https://huggingface.co/settings/tokens`
+
+This is a genuine, provider-side limit on the free, anonymous, shared "ZeroGPU" hardware pool this public Space runs on — not an error this project's code produces or can silently work around. It was hit consistently across every one of this session's real test calls today, well within a single day of ordinary manual testing, with no unusual load. **This is almost certainly the real explanation for "subsequent assistant responses often produce no speech"**: the very first successful call earlier today (Step 1) worked and returned real audio; essentially everything since has been silently absorbing this exact quota error and surfacing it to the frontend as a generic "voice unavailable," which is working as designed (see Step 2's "TTS failure must never break chat") but gives no visibility into *why* speech stopped happening.
+
+**Per instruction, no retry/backoff/complicated workaround logic was added for this.** Retrying against an exhausted shared quota doesn't help — it just delays reporting the same failure, and a fixed public Space's quota reset schedule and per-account increase (via authenticating with a Hugging Face token — itself a real fix, but a product/config decision, not a code one, and out of scope for this investigation) aren't things this code can influence. Instead, this failure is now specifically identified and logged wherever it occurs (see below), so it reads as "the Space's shared quota is exhausted" rather than a generic, uninformative failure.
+
+### Other changes made to `api/tts.py`
+
+- **Explicit timeouts, both layers**: `httpx_kwargs={"timeout": 30}` bounds every individual HTTP call `gradio_client` makes (space discovery, config, queue join/poll) — previously unbounded, so a slow/unresponsive Space could hang a request indefinitely with no visible cause. Separately, `job.result(timeout=60)` (using `client.submit()` + `Job.result()` instead of the blocking `client.predict()`) bounds the *entire* wait for a result — queue time plus inference — independently of the per-HTTP-call timeout, since a Space that accepts a job but never finishes it would otherwise hang forever even with bounded individual HTTP calls. Confirmed directly: `Job.result()`'s own docstring/source states it raises `TimeoutError` if the deadline passes, which the module's existing broad exception handler already catches and reports like any other failure.
+- **`verbose=False`** on the `Client` — the previous default (`True`) printed a raw `"Loaded as API: https://..."` line straight to stdout on every construction, bypassing this project's actual logging setup entirely; now everything goes through the `esmerelda.tts` logger like the rest of this module already does.
+- **Structured logging at every stage requested**: `[TTS] request started` (char count, voice), `[TTS] Space client initializing`/`ready` (only logged the first time, with its own elapsed time), `[TTS] space request started`, `[TTS] space request completed` (with its own elapsed time, separate from total), `[TTS] audio received` (byte count) + `total generation time`, and on any failure, `[TTS] request failed after <N>s: <exact reason>` — with the ZeroGPU-quota case specifically called out by name rather than logged as an undifferentiated error, exactly as this investigation was asked to surface it.
+
+### Testing
+
+- Ran `synthesize_speech()` directly (bypassing HTTP) for 3 different sentences in one process: the client-init cost (6.13s) appeared once, on call 1 only; calls 2 and 3 skipped straight to "space request started." All 3 failed with the real ZeroGPU quota error, in 8.70s / 2.91s / 2.72s respectively — call 1 slower only because of the one-time client setup, exactly as intended.
+- Ran the **real HTTP route** (`uvicorn main:app`, real `POST /api/speech`, real network calls to the real Space — no mocking) for 4 consecutive requests with different text each time: request 1 took 13.33s (10.65s of which was the one-time client init), requests 2–4 took 2.4–3.1s each. All 4 returned `502` with the same underlying ZeroGPU quota failure, confirmed in the server's own logs with the exact new `[TTS]`-prefixed lines described above.
+- Backend `pytest` suite re-run after this change (no test file references `api/tts.py` directly — it has no existing test coverage, unchanged by this entry): pre-existing pass/fail split unaffected by this change (unrelated `test_groq_agent.py` failures from a missing `pytest-asyncio` plugin, present since Step 1).
+- **What this could not do**: get a *successful* end-to-end audio response in this session, since the quota was already exhausted before this investigation began and stayed exhausted throughout — every real test above is a genuine, unmocked call to the real Space returning its own real, current error, not a simulated failure. A successful call's "audio received"/"total generation time" log shape was confirmed earlier the same day (Step 1: 162,044 bytes), and this entry's logging changes were verified to fire correctly on the failure path, which is the only path currently reachable.
+
+### Conclusion — reported directly, per instruction, rather than engineered around
+
+**The free `Remsky/Kokoro-TTS-Zero` Space's own shared ZeroGPU quota is the actual, current bottleneck**, and it is not something this project's backend code can fix, retry past, or reliably work around — it is a hard, provider-side limit on anonymous free usage that this project has now hit repeatedly in a single day of ordinary testing. The one genuine bug in this project's own code (reconstructing the `gradio_client.Client` on every call) has been fixed and reduces latency substantially, but does not and cannot change whether the Space itself will accept the request at all. Any further reliability improvement here requires either a Hugging Face account token with its own quota allocation, a different/self-hosted TTS provider, or accepting that this specific free public Space is not a dependable backend for anything beyond occasional testing — a decision for the project owner, not something to silently paper over with retries.
+
+**Files changed this step**: `backend/api/tts.py` (client singleton + lock, explicit HTTP/result timeouts, `verbose=False`, structured `[TTS]` logging at every stage, ZeroGPU-quota-specific failure logging). No other backend files, and no frontend files, changed.
+
+---
+
+## 2026-09-22 (TTS: authenticate the Kokoro Space client with a Hugging Face token)
+
+- **Time**: 2026-09-22, continuing the same day as the TTS reliability investigation above. Smallest possible change, per instruction: only `backend/api/tts.py` plus the two `.env`/`.env.example` files it reads. The existing singleton client, timeout handling, structured `[TTS]` logging, `routes.py`, and the entire frontend are **unchanged**.
+
+### What changed
+
+- **`HF_TOKEN`** is now a required backend environment variable (`backend/.env.example` documents it; an empty placeholder line was appended to the real, gitignored `backend/.env` for the project owner to fill in — its value was never read or logged by this session).
+- **`api/tts.py`** now calls `load_dotenv(backend/.env)` itself at import time (the same idempotent pattern `api/groq_agent.py` already uses — python-dotenv never overrides an already-set env var, so this is safe regardless of module import order) and reads `HF_TOKEN` via `os.environ.get("HF_TOKEN")` inside `_get_client()`, passed straight through as `Client(_SPACE_ID, ..., token=hf_token)` — `gradio_client.Client`'s own documented `token` parameter for Hugging Face authentication. The token is read once, at the same point the singleton `Client` is constructed (see the previous entry) — never re-read or re-logged per request.
+- **If `HF_TOKEN` is missing or empty**, `_get_client()` raises `TtsUnavailableError("HF_TOKEN is not configured in backend/.env")` **immediately**, before making any network call to the Space at all — this is deliberately a distinct code path from the existing "provider call failed" handling in `synthesize_speech()` (moved the `_get_client()` call outside that function's try/except), so a missing token surfaces as its own clear configuration error rather than being relabeled into the generic "voice provider unavailable" message an actual runtime failure produces. Verified directly: a real `POST /api/speech` request with no `HF_TOKEN` set returns `502 {"detail": "HF_TOKEN is not configured in backend/.env"}` in ~0.3s — no wasted network round trip to the (already quota-exhausted) Space.
+- **Never exposed**: the token itself is never logged (only a boolean — `[TTS] Space client initializing (space=..., authenticated=True)`) and never appears in any response sent to the frontend; the "HF_TOKEN is not configured" message states only that the variable is absent, not any value.
+
+### Testing
+
+- **Missing-token path** (this session's actual current state — no real Hugging Face token is available in this environment): confirmed directly, both by calling `synthesize_speech()` in-process and through 3 real, consecutive `POST /api/speech` HTTP requests against the running server — every one failed fast (~0.2–0.3s) and consistently with the exact same clear `"HF_TOKEN is not configured in backend/.env"` message, never a generic/ambiguous failure.
+- **Wiring check, using a deliberately fake token** (`HF_TOKEN=hf_fake_placeholder_token_for_wiring_test`, to confirm the token is actually reaching the request without needing a real one): the client constructed successfully, logged `authenticated=True`, and the request proceeded all the way through to the Space's queue — confirming the token parameter is correctly threaded from `os.environ` through `Client(...)` into the real outgoing request, not silently dropped or misnamed. As expected for a fake token, the Space still returned its real ZeroGPU quota-exceeded message (a fake/invalid token doesn't grant a real account's quota — this is the Space correctly rejecting it, not a bug here).
+- **What this could not verify, stated honestly**: whether a *real, valid* Hugging Face token actually clears the ZeroGPU quota error — no real token exists in this environment to test with. The code path is implemented and the wiring is confirmed correct (per the fake-token test above); confirming the quota itself clears requires the project owner to set a real `HF_TOKEN` in `backend/.env` and rerun `POST /api/speech` — at that point the existing `[TTS] audio received: <N> bytes; total generation time <N>s` log line (already implemented and log-tested successfully back in Step 1, before the quota was exhausted) is exactly what confirms success.
+- Backend `pytest` suite re-run after this change: pre-existing pass/fail split unaffected (no test file references `api/tts.py`; the same unrelated `test_groq_agent.py` failures from a missing `pytest-asyncio` plugin persist, present since Step 1).
+- No frontend changes were made, so `tsc -b`/`vite build` were not run for this entry.
+
+### Conclusion
+
+Per instruction, no retry/backoff logic was added, and the TTS system's overall design is unchanged — this entry only adds the one missing piece (authentication) that the previous investigation identified as the actual lever available to address the quota exhaustion, and makes its absence fail loudly and immediately rather than quietly reproducing the same unauthenticated failure. **Whether this actually resolves the ZeroGPU quota problem in practice is not yet confirmed and requires a real `HF_TOKEN` to test** — that is the concrete next step, not further code changes here.
+
+**Files changed this step**: `backend/api/tts.py` (load `HF_TOKEN`, pass it to `Client(...)`, distinct configuration-error path), `backend/.env.example` (documented the new required variable), `backend/.env` (empty `HF_TOKEN=` placeholder appended — no other line touched, no secret read or logged). No other backend files, and no frontend files, changed.
+
+---
+
+## 2026-09-22 (TTS: real HF_TOKEN confirmed — authentication resolves the ZeroGPU quota error)
+
+- **Time**: 2026-09-22, continuing the same day as the TTS entries above. Definitive result: **a real `HF_TOKEN` was added to `backend/.env` since the previous entry, and it works** — three consecutive real `POST /api/speech` requests, with different text each time, all returned real, valid WAV audio. Scope, per instruction: `backend/api/tts.py` only (one new diagnostic log line), no retries/workarounds, no frontend changes.
+
+### What changed
+
+Added one diagnostic log line to `_get_client()`, logged once (at singleton construction) before the missing-token check: `[TTS] HF_TOKEN check: configured=<bool>, prefix=<first 3 chars>, length=<int>` — enough to confirm a token is actually present and roughly well-formed (an `hf_...`-shaped prefix, a plausible length) without ever coming close to reconstructing or exposing the token itself. Verified directly that no other log line, anywhere in this module or in `httpx`'s own INFO-level request logging (which logs only the method+URL, never headers), ever prints the token.
+
+### Verification — real token, real Space, real result
+
+Read only the token's shape from `backend/.env` (never its value) to confirm one was actually present before testing: **configured, `hf_` prefix, 37 characters** — a plausible real Hugging Face token, not an empty placeholder.
+
+Started the real backend and sent **3 real, consecutive `POST /api/speech` requests with different text**, no mocking:
+
+| # | Result | Bytes | Total time | Notes |
+|---|--------|-------|------------|-------|
+| 1 | `200 OK` | 259,244 | 15.13s | includes one-time client construction (5.31s) + first Space call (9.62s) |
+| 2 | `200 OK` | 278,444 | 5.03s | client reused (singleton) — no construction overhead |
+| 3 | `200 OK` | 279,644 | 4.63s | same |
+
+All three response bodies were confirmed as genuine `RIFF`/`WAVE` audio (checked their real byte headers directly). The backend's own logs for request 1 show the complete, real chain succeeding end to end:
+
+```
+[TTS] request started: 71 chars, voice=af_sarah
+[TTS] HF_TOKEN check: configured=True, prefix=hf_, length=37
+[TTS] Space client initializing (space=Remsky/Kokoro-TTS-Zero, authenticated=True)
+[TTS] Space client ready in 5.31s
+[TTS] space request started (api_name=/generate_speech_from_ui)
+[TTS] space request completed in 9.62s
+[TTS] audio received: 259244 bytes; total generation time 15.13s
+```
+
+No `TtsUnavailableError`, no ZeroGPU quota message, on any of the 3 requests.
+
+### Definitive conclusion
+
+**The real `HF_TOKEN` is being loaded correctly, is being passed to the `gradio_client.Client` correctly, and is being accepted by the Hugging Face Space — authenticating with it resolves the ZeroGPU quota error this project was hitting throughout the day's earlier testing.** This is not a "plausibly fixed" or "wiring confirmed but unverified" result (as the previous entry, working without a real token, had to honestly state) — it is a direct, repeated, real observation: the exact same Space, the exact same code path, the exact same kind of request that failed with `"You have exceeded your ZeroGPU runs limit"` on every attempt earlier today now succeeds every time once a real, valid token is present. **Per instruction, no retry or workaround logic was added or is needed — the fix was authentication, and it works.**
+
+The two things established with certainty by the earlier entries still stand and are now fully closed out: (1) reconstructing the `gradio_client.Client` on every call was a real, separate latency bug, fixed by the singleton; (2) the unauthenticated public Space's shared ZeroGPU quota was a real, provider-side limit, now avoided by authenticating with this account's own token instead.
+
+**Files changed this step**: `backend/api/tts.py` (one new diagnostic log line — token presence/shape only, never its value). No other files changed.
+
+---
+
 <!-- Add the next entry above this line, newest at the top or bottom — just be consistent -->
