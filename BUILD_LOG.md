@@ -1452,4 +1452,44 @@ Only three continuous, already-organic-shaped elements are modulated — a soft 
 
 ---
 
+## 2026-09-22 (Voice — Step 3 fix: the orb the user actually looks at wasn't wired up)
+
+- **Time**: 2026-09-22, continuing the same day as Steps 1–3 above. This entry corrects Step 3's own claim of "verified working" — a real manual browser session showed the orb not visibly reacting, and the previous entry's automated verification did not actually catch the bug because it never inspected the right DOM element. **No backend files were touched at all this step.** Moodle, assignments, document syncing, the TTS backend, the Kokoro provider, and AI response generation are all untouched.
+
+### Root cause 1 (the real bug — confirmed by code inspection, not just testing): the per-message avatar orb was never wired to speech state
+
+`frontend/src/pages/Chat.tsx`'s `MessageBubble` component renders a small `AiCore` **next to every assistant reply's text** — this is the orb a person actually looks at while reading a response, not the smaller one in the page header. Step 3 only wired `isSpeaking`/`energyRef` into the **header** orb (`state={pending ? "processing" : isSpeaking ? "active" : "idle"}`); `MessageBubble`'s own orb was left exactly as it was before Step 3 even started: `<AiCore size="sm" state="idle" />` — a hardcoded, permanently-idle state, structurally incapable of reacting to anything, no matter how correct the underlying audio-analysis pipeline was. This is why the user saw no reaction: the working part of Step 3 was real, but it wasn't in front of them.
+
+Step 3's own Playwright verification passed because it queried `document.querySelectorAll('svg circle')` **globally**, which happened to pick up the header orb's circles first/exclusively in practice and never specifically asserted on the message-bubble orb — so a real, user-visible gap in Step 3's actual implementation went unnoticed. This entry's re-verification explicitly scopes queries to the scrollable transcript container (where message bubbles render) to directly check the element a user looks at, not just "some orb on the page."
+
+**Fix**: `MessageBubble` now takes `speaking: boolean` and `energyRef` props. `Chat.tsx` passes `speaking={isSpeaking && idx === messages.length - 1}` for each message as it maps over `messages` — true only for the most recent assistant message while its reply is the one actually being spoken (consistent with `useEsmereldaSpeech`'s "one response audible at a time" behavior). The message's own orb now renders `state={speaking ? "active" : "idle"}` and `energyRef={speaking ? energyRef : undefined}` — reacting exactly like the header orb, for the specific message currently being narrated.
+
+### Root cause 2 (hardening, not reproduced but explicitly requested): AudioContext could start/stay suspended outside a user gesture
+
+`speak()` only ever created/resumed the `AudioContext` deep inside its own `async` continuation, which runs after `await sendChatMessage()` (the full Groq round trip) and `await synthesizeSpeech()` (the full Kokoro round trip) — several seconds removed from the original keypress, and no longer synchronously inside any gesture handler. Some browsers only reliably resume a freshly-created `AudioContext` when creation/resume happens within, or very soon after, a genuine user gesture; created this far removed from one, a context can stay `"suspended"` indefinitely — silently producing no analyser data (all-flat time-domain samples → `energyRef` pinned at 0) even while `audio.play()` itself keeps working fine, since `<audio>` playback and Web Audio graph processing are governed by separate, only-partially-overlapping autoplay rules.
+
+**This specific failure mode was not reproduced** in this environment — a repro attempt inserting a realistic ~9s delay (matching real backend logs from Steps 1–2: several seconds of Groq + several seconds of Kokoro) between the triggering keypress and audio playback still showed the orb reacting correctly. That doesn't rule it out in the user's actual browser/OS/build, and the task's own instructions specifically call this out as a known class of bug — so it's fixed defensively regardless: a new one-time `pointerdown`/`keydown` listener on `window` (added on mount, removed after firing once) now creates the shared `<audio>` element, taps it into the Web Audio graph, and calls `audioContext.resume()` directly from within that real, fresh gesture — e.g. the same click/Enter-press that sends the first chat message — rather than only ever attempting this deep inside `speak()`'s post-network continuation. `speak()` still also calls `resume()` defensively as a (now redundant in the common case) second attempt. `ensureWebAudioGraph`'s existing one-time guard (`webAudioAttemptedRef`) means this can never create a second `MediaElementSourceNode` for the same element, however many times priming or `speak()` runs.
+
+### Diagnostics added (dev-only, per instruction)
+
+`useEsmereldaSpeech.ts` now logs, gated behind `import.meta.env.DEV` (statically `false` in production — confirmed dead-code-eliminated from the `vite build` output; no code changes needed to "remove" it afterward, and it logs no audio content or other sensitive data):
+- once, when the Web Audio graph finishes setting up (or fails) — the resulting `AudioContext.state` and whether the analyser wiring succeeded;
+- roughly twice a second while the energy loop runs — `isSpeaking`, whether the `<audio>` element exists, `audio.paused`, `audioContext.state`, whether an analyser is attached, and the current smoothed `energy` value.
+
+This is exactly what let this session directly confirm, from real console output (not just visual sampling), that the pipeline was genuinely live end-to-end in its own testing: `{contextState: "running", fftSize: 256}` at setup, followed by repeated `{isSpeaking: true, audioElementExists: true, audioPaused: false, audioContextState: "running", hasAnalyser: true}` ticks while a real reply played.
+
+### Testing
+
+- `npx tsc -b` and `npm run build` — both clean; the production bundle size was unaffected (confirming the dev-only diagnostics really are stripped from it).
+- **Real browser (Playwright-driven Chromium), against the real running `uvicorn` + `vite` dev app**, re-verified with queries specifically scoped to the message-bubble transcript container (not "any orb on the page," which is what let Step 3's gap slip through):
+  - Sent a message (mocked `/api/chat` with a realistic ~2s delay, mocked `/api/speech` returning a **real, previously Kokoro-generated WAV file**, with a ~3s delay): the message bubble's own avatar orb's `scale` fluctuated continuously (~1.00–1.13) while "Speaking…" was shown, and reset to no inline transform at all the instant the clip ended and status returned to "Online" — captured alongside the dev diagnostic log lines quoted above, confirming both the visual and the underlying data pipeline.
+  - Sent a second message while the first's audio was still playing: exactly one bubble orb was reacting at any moment — the newest message's, never the previous one's — and after both finished, zero bubbles had any leftover transform.
+  - Forced `/api/speech` to return `502`: status never left "Online" / got stuck on "Speaking…", no orb transform was ever set, and the chat reply still rendered normally — unaffected by this step's changes.
+- Backend: unaffected — no backend files changed this step. Step 1's `pytest` result stands (12 passed; 5 pre-existing, unrelated `test_groq_agent.py` failures from a missing `pytest-asyncio` plugin in the local venv).
+- **What still hasn't been done, stated explicitly**: an actual human clicking through the actual UI in a normal desktop browser, from this environment, is not something this session can perform — all verification here is Playwright-driven Chromium against the real backend and real (or really-generated) audio, which is materially closer to real usage than Step 3's version but is still not literally "the user's own manual test." Root cause 1 (the hardcoded `state="idle"` avatar orb) is a plain, certain code defect independent of any test tool, confirmed by reading the pre-fix source directly; root cause 2's fix is a standard, defensible hardening for a real class of browser behavior, applied even though this session couldn't reproduce that specific failure.
+
+**Files changed this step**: `frontend/src/pages/Chat.tsx` (wired `speaking`/`energyRef` into `MessageBubble`'s own orb), `frontend/src/lib/useEsmereldaSpeech.ts` (gesture-primed `AudioContext` creation/resume, factored-out `ensureAudioElement`, dev-only diagnostics). `frontend/src/components/core/AiCore.tsx` unchanged this step (only its doc comment was corrected). No backend files changed.
+
+---
+
 <!-- Add the next entry above this line, newest at the top or bottom — just be consistent -->

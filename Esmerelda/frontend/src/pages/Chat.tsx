@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { Plus, WifiOff, FileText, ArrowUpRight, Download, ClipboardList, BookOpen } from "lucide-react";
 import { getDocumentDownloadUrl, sendChatMessage } from "@/lib/api";
@@ -154,8 +154,14 @@ export default function Chat() {
           </div>
         ) : (
           <>
-            {messages.map((message) => (
-              <MessageBubble key={message.id} message={message} onFollowUp={submitMessage} />
+            {messages.map((message, idx) => (
+              <MessageBubble
+                key={message.id}
+                message={message}
+                onFollowUp={submitMessage}
+                speaking={isSpeaking && idx === messages.length - 1}
+                energyRef={energyRef}
+              />
             ))}
             {pending && (
               <div className="flex items-start gap-3">
@@ -192,9 +198,14 @@ export default function Chat() {
 function MessageBubble({
   message,
   onFollowUp,
+  speaking,
+  energyRef,
 }: {
   message: ChatMessage;
   onFollowUp: (text: string) => void;
+  /** True only for the most recent assistant message while its reply is actually being spoken. */
+  speaking: boolean;
+  energyRef: RefObject<number>;
 }) {
   const isUser = message.role === "user";
 
@@ -223,7 +234,7 @@ function MessageBubble({
 
   return (
     <div className="flex items-start gap-3">
-      <AiCore size="sm" state="idle" />
+      <AiCore size="sm" state={speaking ? "active" : "idle"} energyRef={speaking ? energyRef : undefined} />
       <div className="max-w-[78%] space-y-3">
         <div className="rounded-2xl rounded-tl-sm border border-graphite-700/70 bg-graphite-850 px-4 py-3.5">
           <ChatMarkdown content={message.content} />
