@@ -14,8 +14,8 @@ interface AiCoreProps {
    * are additionally, directly modulated by its value every animation
    * frame via refs (not re-renders), layered on top of the existing
    * idle/active/processing look rather than replacing it. Omit it (as
-   * every non-Chat usage of AiCore does) and this component behaves
-   * exactly as it did before this prop existed.
+   * `Dashboard.tsx` and every idle-state orb in `Chat.tsx` do) and this
+   * component behaves exactly as it did before this prop existed.
    */
   energyRef?: React.RefObject<number>;
 }

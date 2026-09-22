@@ -48,6 +48,20 @@ export function useEsmereldaSpeech() {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const analyserDataRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const energyRafRef = useRef<number | null>(null);
+  const debugFrameRef = useRef(0);
+
+  // Creates the one shared <audio> element `speak()` reuses for every
+  // response, if it doesn't already exist. Split out of `speak()` so the
+  // gesture-priming effect below can call it too, without ever creating a
+  // second element (createMediaElementSource below is a one-per-element,
+  // one-time-ever operation).
+  const ensureAudioElement = useCallback(() => {
+    if (!audioRef.current) {
+      audioRef.current = new Audio();
+      audioRef.current.addEventListener("ended", () => setIsSpeaking(false));
+    }
+    return audioRef.current;
+  }, []);
 
   // Taps the given <audio> element's output into an AnalyserNode without
   // changing what the listener hears. `createMediaElementSource` can only
@@ -74,11 +88,18 @@ export function useEsmereldaSpeech() {
         audioCtxRef.current = ctx;
         analyserRef.current = analyser;
         analyserDataRef.current = new Uint8Array(new ArrayBuffer(analyser.frequencyBinCount));
-      } catch {
+        if (import.meta.env.DEV) {
+          console.debug("[EsmereldaSpeech] Web Audio graph ready", {
+            contextState: ctx.state,
+            fftSize: analyser.fftSize,
+          });
+        }
+      } catch (err) {
         // The element's output was already captured by the graph above —
         // reconnect straight to the speakers so audio isn't silently
         // lost, just without any energy analysis.
         source.connect(ctx.destination);
+        if (import.meta.env.DEV) console.warn("[EsmereldaSpeech] AnalyserNode wiring failed; audio still plays.", err);
       }
     } catch (err) {
       // No AudioContext, or the browser refused it for some reason.
@@ -109,6 +130,24 @@ export function useEsmereldaSpeech() {
     const rate = target > energyRef.current ? ENERGY_ATTACK : ENERGY_RELEASE;
     energyRef.current += (target - energyRef.current) * rate;
     if (energyRef.current < ENERGY_IDLE_THRESHOLD) energyRef.current = 0;
+
+    // Dev-only, throttled to ~2/sec — never logs audio content, just the
+    // handful of booleans/numbers needed to see exactly where a real
+    // browser's pipeline stops producing data. Stripped from production
+    // builds entirely (import.meta.env.DEV is statically false there).
+    if (import.meta.env.DEV) {
+      debugFrameRef.current += 1;
+      if (debugFrameRef.current % 30 === 0) {
+        console.debug("[EsmereldaSpeech] tick", {
+          isSpeaking: stillPlaying,
+          audioElementExists: !!audio,
+          audioPaused: audio?.paused,
+          audioContextState: audioCtxRef.current?.state ?? "none",
+          hasAnalyser: !!analyser,
+          energy: Number(energyRef.current.toFixed(3)),
+        });
+      }
+    }
 
     if (stillPlaying || energyRef.current > 0) {
       energyRafRef.current = requestAnimationFrame(stepEnergy);
@@ -163,24 +202,50 @@ export function useEsmereldaSpeech() {
       }
 
       urlRef.current = url;
-      if (!audioRef.current) {
-        audioRef.current = new Audio();
-        audioRef.current.addEventListener("ended", () => setIsSpeaking(false));
-      }
-      ensureWebAudioGraph(audioRef.current);
+      const audioEl = ensureAudioElement();
+      ensureWebAudioGraph(audioEl);
+      // Browsers that start a new AudioContext "suspended" until a user
+      // gesture only actually resume it from within/soon-after a real
+      // gesture — by the time this line runs, `speak()` has already
+      // awaited a network round trip, so the gesture-priming effect below
+      // (bound directly to the click/keypress that sent this message) is
+      // what actually gets the context running in practice. This call is
+      // just a harmless, defensive second attempt.
       audioCtxRef.current?.resume().catch(() => {});
 
-      audioRef.current.src = url;
+      audioEl.src = url;
       setIsSpeaking(true);
       startEnergyLoop();
       try {
-        await audioRef.current.play();
+        await audioEl.play();
       } catch {
         setIsSpeaking(false);
       }
     },
-    [stop, ensureWebAudioGraph, startEnergyLoop]
+    [stop, ensureAudioElement, ensureWebAudioGraph, startEnergyLoop]
   );
+
+  // Ties AudioContext creation/resume directly to the first real user
+  // gesture on the page (a click or keypress — e.g. the very "Enter" that
+  // sends the first chat message), rather than only ever attempting it
+  // deep inside speak()'s async continuation after a network round trip.
+  // This is the standard fix for a real browser leaving a freshly-created
+  // AudioContext in "suspended" state (silently producing no analyser
+  // data, even though audio.play() itself can still succeed) when it's
+  // only ever created/resumed outside a gesture's call stack.
+  useEffect(() => {
+    function primeOnFirstGesture() {
+      const audioEl = ensureAudioElement();
+      ensureWebAudioGraph(audioEl);
+      audioCtxRef.current?.resume().catch(() => {});
+    }
+    window.addEventListener("pointerdown", primeOnFirstGesture, { once: true });
+    window.addEventListener("keydown", primeOnFirstGesture, { once: true });
+    return () => {
+      window.removeEventListener("pointerdown", primeOnFirstGesture);
+      window.removeEventListener("keydown", primeOnFirstGesture);
+    };
+  }, [ensureAudioElement, ensureWebAudioGraph]);
 
   useEffect(() => {
     return () => {
