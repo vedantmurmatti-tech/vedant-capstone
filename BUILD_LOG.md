@@ -1608,4 +1608,129 @@ The two things established with certainty by the earlier entries still stand and
 
 ---
 
+## 2026-09-23 (Voice input, step 1: a reusable microphone-recording hook, wired to the Orb — not Conversations)
+
+- **Time**: 2026-09-23. Product direction for this feature: the Orb (not the Conversations/Chat page) is Esmerelda's primary voice interface — a normal voice conversation should happen directly on/around the Orb without navigating anywhere, and Conversations should only ever open later when the user explicitly asks for it or for something that needs the visual interface. **This step deliberately does not implement any of that routing/probing logic** — it only adds the microphone capture primitive and its Orb-adjacent UI. Kokoro TTS, the existing speech-reactive orb energy pipeline (`useEsmereldaSpeech.ts`), `Chat.tsx`/Conversations behavior, and the existing text `CommandInput` were all **untouched**.
+
+### What was built
+
+- **New hook: `frontend/src/hooks/useVoiceInput.ts`** — records microphone audio into an in-memory `Blob` via `MediaRecorder`, and does nothing else: no upload, no speech-to-text, no navigation. Exposes `state` (`"idle" | "listening" | "stopped" | "permission-denied" | "unsupported"`), the most recent `audioBlob`, and `start()`/`stop()`/`reset()`.
+  - **Support check runs once, on mount**: if `navigator.mediaDevices.getUserMedia` or `window.MediaRecorder` don't exist, `state` starts (and stays) `"unsupported"` — `start()` never even attempts `getUserMedia` in that case.
+  - **`start()`** always begins a fresh recording (clears any previous Blob/chunks first, and defensively stops/releases anything still running so two recorders can never overlap), requests the mic via `getUserMedia({ audio: true })`, and on rejection (denied permission, no device, anything) sets `state = "permission-denied"` rather than throwing. `MediaRecorder.isTypeSupported("audio/webm")` is checked so a browser without WebM/Opus support still gets a working (browser-default-codec) recorder instead of a hard failure.
+  - **`stop()`** calls the recorder's own `.stop()`; its `onstop` handler is what actually assembles the final `Blob` from the collected chunks, stops every track on the `MediaStream` (`track.stop()` — this is what releases the OS-level microphone-in-use indicator), and only then sets `state = "stopped"`.
+  - **Cleanup**: an unmount effect stops an in-progress recorder and releases the stream; a `mountedRef` guard prevents a `getUserMedia` promise or a recorder's `onstop` callback that resolves *after* unmount from calling `setState`/`setAudioBlob` on a gone component (and, in the permission-prompt-pending-at-unmount case, still explicitly stops any track it gets handed rather than leaking it).
+- **Orb UI: `frontend/src/pages/Dashboard.tsx`** (the page with the large, primary `AiCore` "hero" orb — not `Chat.tsx`, which was not touched) now has a mic button directly beneath the Orb:
+  - **Idle** → plain mic icon, "Tap to talk to Esmerelda."
+  - **Listening** → the Orb's own existing `state="active"` look is reused as-is (no new AiCore code — this is the exact same visual the speech-*output* energy reaction already uses for "something is happening," just without an `energyRef`, so it shows its calm "active" glow/opacity, not a new animation) plus a small pill badge under the Orb ("● Listening…") and the button turns into a filled cyan "stop" affordance.
+  - **Stopped** → "Recording captured — tap to record again" (only rendered when a real `audioBlob` exists), and the button reverts to the idle look, ready to record again.
+  - **Permission denied** → a warning-triangle icon, red-tinted button, "Microphone access was denied," `title` tooltip pointing at browser site permissions.
+  - **Unsupported** → a muted mic-off icon, disabled button, "Voice input isn't supported in this browser."
+  - None of this touches `AiCore.tsx` itself — the Orb's existing speech-reactive implementation (Step 3's `energyRef` prop) is entirely unused and unaffected here; only the pre-existing `state` prop is reused, and the listening badge/mic button are Dashboard-level markup layered around the Orb, not inside it.
+
+### Testing
+
+- `npx tsc -b` and `npm run build` — both clean.
+- **Real browser (Playwright-driven Chromium with `--use-fake-device-for-media-stream` + `--use-fake-ui-for-media-stream`, a real synthetic microphone device, not a mock of the hook)**, against the real running app on `/dashboard`:
+  - Clicked the mic button: the Orb switched into its `"active"` look, the "Listening…" badge appeared, and the button became a "Stop listening" control — confirmed the page URL stayed at `/dashboard` throughout (never navigated to `/chat`).
+  - Clicked stop: caption changed to "Recording captured — tap to record again," and the mic button was immediately clickable again to start a fresh recording — confirmed still on `/dashboard`.
+  - **Directly verified a real `Blob` was produced** (not just inferred from the UI text) by wrapping the page's own `Blob` constructor before the test and reading back what was actually constructed: `{size: 16516, type: "audio/webm;codecs=opus"}` after a ~1.5s fake-microphone recording — a real, non-empty, correctly-typed audio Blob, held only in the hook's own React state.
+  - **Permission denied**: overrode `navigator.mediaDevices.getUserMedia` to reject with a `NotAllowedError` (simulating a real browser denial, since the fake-media-stream flags above auto-grant every prompt) — clicking the mic button correctly landed on `state = "permission-denied"`, showed "Microphone access was denied," and stayed on `/dashboard`.
+  - **Unsupported browser**: deleted `window.MediaRecorder` via an init script before the page loaded — the hook correctly started in (and stayed in) `"unsupported"`, the mic button rendered disabled with the muted icon and correct caption, and no attempt was made to call `getUserMedia` at all.
+  - No console errors or uncaught page errors in any of the four scenarios above.
+- Not independently re-verified in this pass, since neither was touched by this change: the Kokoro/`useEsmereldaSpeech.ts` auto-speak pipeline (Steps 1–3, TTS reliability entries) and the Conversations/Chat page's own behavior — both were left completely alone, and this step doesn't call anything from either module.
+
+### Explicitly out of scope for this step (per instruction)
+
+- No automatic navigation to Conversations — clicking/using the mic never routes anywhere.
+- No speech-to-text — the recorded Blob is not transcribed.
+- The Blob is never sent to the backend or any other destination — it lives only in the hook's React state and is discarded/replaced on the next `start()` or on unmount.
+- The actual "should this open Conversations" probing/routing logic is intentionally deferred to a future step, as instructed.
+
+**Files changed this step**: `frontend/src/hooks/useVoiceInput.ts` (new), `frontend/src/pages/Dashboard.tsx` (mic button + listening badge added around the existing hero Orb). No other frontend files, and no backend files, changed.
+
+---
+
+## 2026-09-23 (Voice input, step 2: speech-to-text for the Orb — reusing Groq, not a new provider)
+
+- **Time**: 2026-09-23, continuing the same day as voice-input Step 1. Scope, per instruction: convert the `Blob` Step 1 already records into text, shown around the Orb — no navigation, no wiring into Conversations, no TTS changes, no changes to the existing speech-reactive orb energy pipeline. `Chat.tsx`/Conversations was **not touched**.
+
+### Provider choice — inspected what already exists before adding anything
+
+Per instruction to prefer an existing/free service already in the project: this project already has a required, configured `GROQ_API_KEY` (`.env.example`) and an existing singleton `AsyncGroq` client (`api/groq_agent.py`'s `_get_client()`, used for the chat agent). Groq's own hosted API includes a Whisper transcription endpoint (`client.audio.transcriptions.create(model="whisper-large-v3-turbo", file=...)`), confirmed directly against the installed `groq==1.7.0` SDK (already in `requirements.txt`) — no new package, no new account, no new credential. This is the smallest appropriate implementation: **the exact same Groq client, API key, and account this project already trusts for chat is reused for transcription** — a second provider (a self-hosted Whisper, a different cloud STT API) would have meant a new dependency and a new credential for no real benefit.
+
+### What was built
+
+- **New backend module: `backend/api/stt.py`** — `transcribe_speech(audio_bytes, filename, content_type) -> str`, and one `SttUnavailableError` (mirroring `api/tts.py`'s own error-collapsing pattern). Imports `_get_client()`/`GroqUnavailableError` directly from `api/groq_agent.py` rather than constructing a second `AsyncGroq` instance. Structured logging at every stage (`[STT] request started`, `[STT] Groq request started/completed`, `[STT] transcription received`, elapsed times throughout) and distinct, clearly-worded failures for each required error category:
+  - **empty/invalid recording** — rejected before ever calling Groq if the audio is under 256 bytes (any real recording, even one word, is far larger).
+  - **unsupported audio format** — Groq's own `BadRequestError`/`UnprocessableEntityError` caught specifically ("That recording's audio format wasn't understood").
+  - **network failure** — `APIConnectionError`/`APITimeoutError` caught specifically ("Couldn't reach the transcription service").
+  - **transcription failure / Groq not configured** — a catch-all for anything else, plus a distinct path if `GROQ_API_KEY` itself is missing (reusing `groq_agent.py`'s own `GroqUnavailableError`).
+  - (Microphone **permission failure** is a frontend-only concern already fully handled by `useVoiceInput.ts` from Step 1 — confirmed directly that a permission denial never even reaches this endpoint, see Testing below.)
+- **New route: `POST /api/transcribe`** (`backend/api/routes.py`) — accepts a multipart `UploadFile` named `audio`, calls `transcribe_speech()`, returns `{"text": "..."}` (new `TranscriptionOut` schema) or a 502 with `SttUnavailableError`'s message. `python-multipart` (already present transitively in local dev, silently) was pinned explicitly in `requirements.txt` — it's what FastAPI needs to parse the multipart body this endpoint directly depends on, and would have been missing from a clean production install of the previously-unpinned `requirements.txt`.
+- **Frontend: `transcribeAudio(blob)`** added to `lib/api.ts` (its own raw `fetch` with a `FormData` body, not the shared JSON-only `apiFetch` helper — same reasoning as the existing `synthesizeSpeech`) and a new `TranscriptionUnavailableError` that surfaces the backend's specific `detail` message (so "empty recording" reads differently from "audio format wasn't understood" to the user, not one generic failure).
+- **`Dashboard.tsx`** (still the Orb page, not Conversations): a `useEffect` watching `useVoiceInput`'s `audioBlob` automatically calls `transcribeAudio()` the moment a recording finishes — no button press needed beyond the existing stop. New local state (`transcribing`, `transcript`, `transcribeError`) drives:
+  - **Orb state**: `"active"` while listening (unchanged from Step 1), **now also `"processing"` while transcribing** — reusing the existing `AiCore` state prop exactly as `Chat.tsx` already does for "Thinking…", not a new visual.
+  - **Badge under the Orb**: "Listening…" or "Transcribing…" depending on which phase is active.
+  - **A subtle card below the mic button**, shown once transcription finishes: `Esmerelda heard: "<text>"` on success, or the specific error message on failure — this is the recognized text's only destination. It is never passed to `sendChatMessage`, never triggers `navigate()`, and nothing here touches `Chat.tsx`'s messages state at all.
+
+### Testing
+
+- `npx tsc -b` and `npm run build` — both clean.
+- **Backend, direct calls, real audio, real Groq API** (no mocking): synthesized 3 real spoken phrases via the now-working, HF-token-authenticated Kokoro pipeline from the previous entries, then transcribed each with the new `transcribe_speech()` — **all 3 came back correct**: *"What assignments are due this week?"* → exact match; *"Please tell me about my courses."* → exact match; *"Good morning Esmerelda, how are you today?"* → *"Good morning, Esmeralda. How are you today?"* (correct content, expected minor spelling/punctuation variance from real ASR — not a bug).
+- **Backend, real HTTP route** (`uvicorn` + real `POST /api/transcribe`, a real previously-generated Kokoro WAV file uploaded via `curl -F`): `200 {"text": "Good evening, Vedant. How may I assist you?"}` — confirmed correct end to end, plus the full `[STT]`-prefixed log sequence.
+- **Backend error paths, real HTTP requests**: an empty file → `502 {"detail": "The recording was empty or too short to transcribe."}`; a garbage (non-audio) file → `502 {"detail": "That recording's audio format wasn't understood."}` (Groq's own `BadRequestError`/`UnprocessableEntityError`, confirmed distinct from the empty-file path).
+- **Real browser, full UI, three genuinely different spoken phrases** (Playwright-driven Chromium with `--use-fake-device-for-media-stream` + `--use-file-for-fake-audio-capture=<a real WAV file>` — a real synthetic microphone playing back real recorded speech, not a mock of the app's own code): clicked the mic, let the fake device "speak" a real WAV, clicked stop, watched the Orb badge switch from "Listening…" to "Transcribing…" and then show the result:
+  1. Full clip → `Esmerelda heard: "Good evening, Vedant. How may I assist you?"`
+  2. First ~45% of the same clip (sliced at the raw PCM level with Python's `wave` module, a genuinely different audio segment) → `Esmerelda heard: "Good evening, Vedant."`
+  3. Remaining ~55% → `Esmerelda heard: "How may I assist you?"`
+  - The page URL was confirmed to stay at `/dashboard` throughout all three passes — never navigated to `/chat`. No console errors in any pass.
+- **Regression checks**: typed chat on `/chat` (mocked `/api/chat`) still works exactly as before — confirmed a reply renders normally, `Chat.tsx` untouched. Separately confirmed, with `getUserMedia` overridden to reject (`NotAllowedError`), that a permission denial shows "Microphone access was denied" and results in **zero** requests to `/api/transcribe` — the empty/invalid-recording and unsupported-format handling in `stt.py` is real backend logic that's simply never reached in this case, exactly as expected.
+- Backend `pytest` suite re-run after this change (no existing test file references `api/stt.py`, so no pre-existing test could regress from it): unaffected — the same pre-existing 5 failures in `test_groq_agent.py` (missing `pytest-asyncio` plugin), 12 passed.
+
+### Explicitly out of scope for this step (per instruction)
+
+- The recognized transcript is never sent to `sendChatMessage`/the chat agent, and nothing here navigates to `/chat` automatically — both are deferred to a future "probe/routing" step, as instructed.
+- No voice-response playback of the transcript was added.
+- Kokoro TTS (`api/tts.py`) and the existing speech-reactive orb energy pipeline (`useEsmereldaSpeech.ts`, `AiCore.tsx`'s `energyRef` handling) were not touched — `Dashboard.tsx`'s new `"processing"` state reuses the exact same `AiCore` prop `Chat.tsx` already uses for its own "Thinking…" indicator, not new code in `AiCore.tsx` itself.
+
+**Files changed this step**: `backend/api/stt.py` (new), `backend/api/routes.py` (one new route), `backend/api/schemas.py` (one new schema), `backend/requirements.txt` (`python-multipart` pinned explicitly), `frontend/src/lib/api.ts` (one new function + error class), `frontend/src/pages/Dashboard.tsx` (auto-transcribe wiring + recognized-text display around the Orb). No backend TTS files, and no `Chat.tsx`/Conversations files, changed.
+
+---
+
+## 2026-09-23 (Voice input, step 3: the first complete voice conversation loop on the Orb)
+
+- **Time**: 2026-09-23, continuing the same day as voice-input Steps 1–2. Connects the pieces those steps already proved working (mic recording, Groq Whisper STT, the shared chat-reasoning pipeline, Kokoro TTS, the speech-reactive Orb) into one continuous idle→listening→transcribing→thinking→speaking→idle loop, entirely on `Dashboard.tsx`. **`Chat.tsx` was not modified at all** — no shared-API extraction turned out to be necessary; `lib/api.ts`'s `sendChatMessage()` and `lib/useEsmereldaSpeech.ts`'s `speak()` were already plain, page-independent exports, so both were simply imported into `Dashboard.tsx` and called directly, exactly as `Chat.tsx` already does. `AiCore.tsx`, `api/tts.py`, and the speech-reactive `energyRef` pipeline were not touched either.
+
+### What was built
+
+All changes are in `frontend/src/pages/Dashboard.tsx`; no backend files changed this step.
+
+- **The loop**: the existing `useEffect` from Step 2 (triggered by `useVoiceInput`'s `audioBlob`) is now a single async pipeline: `transcribeAudio()` (Step 2, unchanged) → **`sendChatMessage()`** (imported from `lib/api.ts` — the exact function `Chat.tsx` calls for every typed message; not a second implementation) → **`speak()`** (imported from `lib/useEsmereldaSpeech.ts` — the exact hook `Chat.tsx` uses for auto-narration; Dashboard gets its own instance of the hook, since only one of the two pages is ever mounted at once, but there is only one hook implementation).
+- **Phase derivation**: a single `phase` value (`"idle" | "listening" | "transcribing" | "thinking" | "speaking"`) computed from three already-existing, independently-owned pieces of state — `useVoiceInput`'s `voiceState`, this component's own `transcribing`/`thinking` booleans, and `useEsmereldaSpeech`'s `isSpeaking` — not a new state machine stored anywhere. It drives the Orb's existing `AiCore` `state` prop (`"active"` for listening/speaking, `"processing"` for transcribing/thinking, `"idle"` otherwise — no new values added to `AiCoreState`) and, only while `phase === "speaking"`, passes the existing `energyRef` through exactly as Step 3 of the earlier "voice output" work already established — no new code in `AiCore.tsx`.
+- **Interrupt handling (requirement 9)**: `handleMicClick()` now always calls `stopSpeaking()` (the existing hook's own stop, which pauses/resets its `<audio>` element immediately) and increments a `pipelineIdRef` counter before starting a new recording — regardless of which phase was active. Every `await` point inside the pipeline checks `pipelineIdRef.current !== myPipelineId` and bails out silently if a newer recording has since started, so a slow, still-in-flight transcription/chat/speak call from an *interrupted* turn can never overwrite the Orb's state or start speaking again after the user has moved on.
+- **A real bug found and fixed during testing, not just implemented from the spec**: the first version set `thinking = false` immediately once the chat reply arrived, then called `speak()`. Since `speak()` itself needs time to actually synthesize audio before `isSpeaking` becomes `true`, this produced a brief, real, observable flash back to the Orb's idle look between "Thinking…" and "Speaking…" — a genuine deviation from the requested `thinking → speaking` transition, caught only by watching the real phase-caption sequence during testing (see below), not by reasoning about the code alone. Fixed by keeping `thinking` true across the `await speak(reply)` call itself, only clearing it once `speak()` has fully settled (whether it started playing or failed) — verified fixed by re-running the same real test afterward.
+- **Errors (requirement 8)**: a `voiceError` string, shown as a small card below the mic button, distinct from the transcript card — set on a transcription or chat-reasoning failure, and the phase always falls back to `"idle"` in that case (never stuck on "Transcribing…"/"Thinking…"). A Kokoro/TTS failure specifically is **not** shown as a `voiceError` — consistent with the existing `useEsmereldaSpeech` design principle from earlier entries ("a TTS failure must never break the chat/voice loop, only silently skip narration"), which this step deliberately did not redesign.
+- **Recognized speech display (requirement 5)**: unchanged in spirit from Step 2 — a subtle `Esmerelda heard: "..."` card under the mic button — now persists through transcribing/thinking/speaking instead of only right after transcription, so the user can see what was heard for the whole exchange.
+- Nothing in this step calls `navigate()`, touches `Chat.tsx`'s `messages` state, or renders anything resembling a chat bubble — the transcript and (spoken, not written) reply never appear anywhere but this one subtle card and the Orb itself.
+
+### Testing
+
+- `npx tsc -b` and `npm run build` — both clean.
+- **Fully real, unmocked, real-microphone end-to-end run** (Playwright-driven Chromium with `--use-fake-device-for-media-stream` + `--use-file-for-fake-audio-capture=<a real WAV file>` — a real synthetic microphone device, not a mock of any app code; **no backend route was mocked in this pass**): clicked the mic, let the fake device "speak" a real recorded phrase, clicked stop. Backend logs confirm the *entire* real chain executed for real: `[STT] transcription received` (Groq Whisper) → `[CHAT] query received: 'Good evening, Vedant. How may I assist you?'` on the same `esmerelda.chat` logger `Chat.tsx`'s own `/api/chat` calls use → `sending grounded context to Groq` → `[TTS] request started` → attempted a real call to the Kokoro Space. The Space's real ZeroGPU quota (already documented as exhausted from this same day's earlier testing across multiple prior entries) genuinely rejected the request — and the Orb still returned cleanly to idle (`"Tap to talk again"`), with no crash, no stuck phase, and no navigation. This is a real, live instance of requirement 8's "voice errors must return the Orb to idle gracefully," not a simulated one.
+- **Speaking-phase and Orb-reactivity verification** (same real, unmocked mic input and real `/api/transcribe` + `/api/chat`; only `/api/speech` was mocked, returning a **real, previously Kokoro-generated WAV file** — isolating "does this step's new orchestration correctly drive the already-proven TTS+energy pipeline" from today's already-documented, unrelated Kokoro quota outage): the Orb showed "Speaking…", real `<audio>.play()` fired, and the Orb's core `scale` transform fluctuated continuously (~1.0 to ~1.11) while playing — the exact same reactive behavior already established for `Chat.tsx`, now proven to work identically when driven from the Orb's own voice loop.
+- **Interrupt verification** (same setup): let a response start speaking, waited ~800ms into real playback, then clicked the mic again mid-sentence. Instrumented `HTMLMediaElement.prototype.play/pause` directly: the in-progress audio was `pause`d within ~30ms of the interrupt click, the Orb switched to `"Listening… tap to stop"` immediately, and the subsequent recording's own pipeline ran to its own new `play()` call — the interrupted response's audio never resumed or played again afterward. `/dashboard` was confirmed as the URL throughout.
+- **Regression checks**: typed chat on `/chat` (mocked `/api/chat`, `Chat.tsx` untouched) still renders a reply normally. A permission-denied microphone still results in zero calls to `/api/transcribe` (unchanged from Step 2 — this step didn't touch that path).
+- No console errors or uncaught page errors were observed in any of the above passes.
+- Backend `pytest` suite re-run after this step (no backend files were changed, so no regression was possible): unaffected — the same pre-existing 5 failures in `test_groq_agent.py` (missing `pytest-asyncio` plugin), 12 passed.
+
+### Explicitly out of scope for this step (per instruction)
+
+- **No probe/conversation routing** — the Orb never decides to open Conversations; that's the next feature, once this basic loop is confirmed stable.
+- **No changes to `AiCore.tsx`** — the Orb's speaking-phase reaction is the identical `energyRef` mechanism established earlier; nothing new was added to the component itself.
+- **No changes to `api/tts.py`/Kokoro** — today's real quota exhaustion (documented across several earlier entries the same day) was worked around only for testing purposes (mocking `/api/speech` with real cached audio), never in the shipped code.
+
+**Files changed this step**: `frontend/src/pages/Dashboard.tsx` only (the transcribe→chat→speak pipeline, phase derivation, interrupt handling, and the updated Orb/badge/caption rendering). No backend files, and no other frontend files (including `Chat.tsx`), changed.
+
+---
+
 <!-- Add the next entry above this line, newest at the top or bottom — just be consistent -->
