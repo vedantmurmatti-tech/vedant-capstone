@@ -40,6 +40,14 @@ playwright==1.63.0
 # Gradio Space's API rather than scraping its webpage. No API key
 # required: the Space is public.
 gradio_client==2.7.1
+# Required by FastAPI's UploadFile/File(...) form-data parsing — used by
+# POST /api/transcribe (backend/api/stt.py) to receive the recorded
+# audio Blob. Was already present transitively in local dev (pulled in by
+# another dependency), which would have silently masked its absence from
+# this pinned list until a production install without it broke that one
+# endpoint — pinned explicitly now that this project directly depends on
+# multipart parsing, not just incidentally has it installed.
+python-multipart==0.0.32
 # Text extraction for the Knowledge Base's document indexing/retrieval
 # pipeline (storage/text_extraction.py) — PDF/DOCX/PPTX only, per that
 # module's own documented scope. Each processes exactly one already-

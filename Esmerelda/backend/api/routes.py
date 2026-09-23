@@ -1,6 +1,6 @@
 import logging
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
@@ -18,6 +18,7 @@ from .schemas import (
     SpeechRequestIn,
     SyncStatusOut,
     SyncTriggerOut,
+    TranscriptionOut,
 )
 from storage.crud import finish_sync_run, try_start_new_sync_run
 from storage.paths import resolve_document_path
@@ -223,3 +224,15 @@ def synthesize_speech(payload: SpeechRequestIn):
     except TtsUnavailableError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
     return Response(content=audio, media_type="audio/wav")
+
+
+@router.post("/transcribe", response_model=TranscriptionOut)
+async def transcribe(audio: UploadFile = File(...)):
+    from .stt import SttUnavailableError, transcribe_speech
+
+    audio_bytes = await audio.read()
+    try:
+        text = await transcribe_speech(audio_bytes, audio.filename or "recording.webm", audio.content_type)
+    except SttUnavailableError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return TranscriptionOut(text=text)

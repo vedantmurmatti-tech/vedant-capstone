@@ -94,6 +94,10 @@ class SpeechRequestIn(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
 
 
+class TranscriptionOut(BaseModel):
+    text: str
+
+
 class ChatSourceOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

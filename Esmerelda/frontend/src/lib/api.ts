@@ -138,6 +138,48 @@ export async function synthesizeSpeech(text: string): Promise<string> {
   return URL.createObjectURL(blob);
 }
 
+export class TranscriptionUnavailableError extends Error {
+  constructor(reason: string) {
+    super(`Esmerelda couldn't understand that recording — ${reason}`);
+    this.name = "TranscriptionUnavailableError";
+  }
+}
+
+/**
+ * Sends a recorded audio Blob to POST /api/transcribe (see
+ * backend/api/stt.py) and returns the recognized text. Only ever called
+ * with a Blob produced by `useVoiceInput` — never sends anything to the
+ * chat agent or navigates anywhere; that wiring is a later step.
+ */
+export async function transcribeAudio(blob: Blob): Promise<string> {
+  const form = new FormData();
+  form.append("audio", blob, "recording.webm");
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/api/transcribe`, {
+      method: "POST",
+      body: form,
+    });
+  } catch {
+    throw new TranscriptionUnavailableError(`couldn't reach ${API_BASE}.`);
+  }
+
+  if (!res.ok) {
+    let detail = `request failed with status ${res.status}.`;
+    try {
+      const body = (await res.json()) as { detail?: string };
+      if (body?.detail) detail = body.detail;
+    } catch {
+      // Response body wasn't JSON — fall back to the generic status message above.
+    }
+    throw new TranscriptionUnavailableError(detail);
+  }
+
+  const data = (await res.json()) as { text?: string };
+  return typeof data.text === "string" ? data.text : "";
+}
+
 export class ChatUnavailableError extends Error {
   constructor(reason: string) {
     super(`Esmerelda's AI backend isn't reachable right now — ${reason}`);

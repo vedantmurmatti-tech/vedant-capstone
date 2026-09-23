@@ -1,8 +1,18 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ClipboardList, BookOpen, Database, ArrowRight } from "lucide-react";
+import { ClipboardList, BookOpen, Database, ArrowRight, Mic, MicOff, TriangleAlert } from "lucide-react";
 import { useAsync } from "@/lib/useAsync";
-import { getAssignments, getCourses, getDashboardSummary, getDocuments, getStudentName } from "@/lib/api";
+import {
+  getAssignments,
+  getCourses,
+  getDashboardSummary,
+  getDocuments,
+  getStudentName,
+  transcribeAudio,
+  TranscriptionUnavailableError,
+  sendChatMessage,
+  ChatUnavailableError,
+} from "@/lib/api";
 import { commandChips } from "@/lib/mockData";
 import { AiCore } from "@/components/core/AiCore";
 import { CommandInput } from "@/components/ui/CommandInput";
@@ -11,7 +21,9 @@ import { DocumentIndexRow } from "@/components/ui/DocumentIndexRow";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { ListSkeleton, Skeleton } from "@/components/ui/LoadingSkeleton";
-import { getAssignmentUrgency, relativeTimeFromNow } from "@/lib/utils";
+import { getAssignmentUrgency, relativeTimeFromNow, cn } from "@/lib/utils";
+import { useVoiceInput } from "@/hooks/useVoiceInput";
+import { useEsmereldaSpeech } from "@/lib/useEsmereldaSpeech";
 
 function useGreetingWord(): string {
   const hour = new Date().getHours();
@@ -32,6 +44,21 @@ export default function Dashboard() {
   const [command, setCommand] = useState("");
 
   const { data: name } = useAsync(getStudentName, []);
+  const { state: voiceState, audioBlob, start: startVoiceInput, stop: stopVoiceInput } = useVoiceInput();
+  // Same hook Chat.tsx uses for its own auto-speak — a separate instance
+  // (its own <audio> element/AudioContext), not a shared one, since only
+  // one of these two pages is ever mounted at a time. No new TTS or
+  // speech-reactive-orb code was written for this step.
+  const { speak, stop: stopSpeaking, isSpeaking, energyRef } = useEsmereldaSpeech();
+  const [transcribing, setTranscribing] = useState(false);
+  const [thinking, setThinking] = useState(false);
+  const [transcript, setTranscript] = useState<string | null>(null);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  // Invalidates a still-in-flight transcribe→chat pipeline when a new
+  // recording starts before the previous one finished — otherwise a slow
+  // earlier response could arrive and start speaking (or overwrite the
+  // displayed transcript) after the user has already moved on.
+  const pipelineIdRef = useRef(0);
   const { data: summary, error: summaryError, refetch: refetchSummary } = useAsync(getDashboardSummary, []);
   const {
     data: assignments,
@@ -75,6 +102,83 @@ export default function Dashboard() {
     navigate("/chat", { state: { initialMessage: command } });
   }
 
+  // The full voice loop lives on the Orb, not Conversations (see
+  // BUILD_LOG.md). Tapping the mic — whether starting fresh or
+  // interrupting whatever phase is currently running (transcribing,
+  // thinking, or Esmerelda speaking) — always stops any playing TTS audio
+  // immediately and invalidates any still-in-flight transcribe→chat
+  // pipeline, so an old response can never resume or speak after a new
+  // recording has started.
+  function handleMicClick() {
+    if (voiceState === "listening") {
+      stopVoiceInput();
+      return;
+    }
+    if (voiceState === "unsupported") return;
+
+    stopSpeaking();
+    pipelineIdRef.current += 1;
+    setTranscribing(false);
+    setThinking(false);
+    setTranscript(null);
+    setVoiceError(null);
+    void startVoiceInput();
+  }
+
+  // listening -> transcribing -> thinking -> speaking -> idle. The
+  // transcript is sent through the exact same sendChatMessage() (lib/api.ts)
+  // Chat.tsx itself calls, and the reply is spoken through the exact same
+  // useEsmereldaSpeech().speak() Chat.tsx itself calls — no second
+  // reasoning or TTS implementation. Nothing here ever calls navigate() or
+  // touches Chat.tsx's own message list.
+  useEffect(() => {
+    if (!audioBlob) return;
+    const myPipelineId = pipelineIdRef.current;
+
+    (async () => {
+      setTranscribing(true);
+      setTranscript(null);
+      setVoiceError(null);
+
+      let heard: string;
+      try {
+        heard = await transcribeAudio(audioBlob);
+      } catch (err) {
+        if (pipelineIdRef.current !== myPipelineId) return;
+        setTranscribing(false);
+        setVoiceError(err instanceof TranscriptionUnavailableError ? err.message : "Transcription failed.");
+        return;
+      }
+      if (pipelineIdRef.current !== myPipelineId) return;
+      setTranscribing(false);
+
+      const trimmed = heard.trim();
+      setTranscript(trimmed || "(No speech detected)");
+      if (!trimmed) return; // nothing to send Esmerelda
+
+      setThinking(true);
+      let reply: string;
+      try {
+        const res = await sendChatMessage(trimmed);
+        reply = res.reply;
+      } catch (err) {
+        if (pipelineIdRef.current !== myPipelineId) return;
+        setThinking(false);
+        setVoiceError(err instanceof ChatUnavailableError ? err.message : "Esmerelda couldn't respond.");
+        return;
+      }
+      if (pipelineIdRef.current !== myPipelineId) return;
+      // Deliberately still "thinking" (not yet reset) here: speak() itself
+      // takes a moment to generate audio before playback actually starts
+      // (see api/tts.py) — resetting `thinking` before that would flash
+      // the Orb back to idle for a moment between the reply arriving and
+      // Esmerelda actually starting to speak, which isn't in the intended
+      // idle->listening->transcribing->thinking->speaking->idle flow.
+      await speak(reply); // isSpeaking/energyRef drive the Orb's existing "active" + speech-reactive look
+      if (pipelineIdRef.current === myPipelineId) setThinking(false);
+    })();
+  }, [audioBlob]);
+
   const greeting = useGreetingWord();
 
   return (
@@ -92,8 +196,113 @@ export default function Dashboard() {
 
         <p className="relative font-mono text-xs uppercase tracking-[0.2em] text-graphite-400">{today}</p>
 
-        <div className="relative mt-6">
-          <AiCore size="lg" state="idle" />
+        <div className="relative mt-6 flex flex-col items-center">
+          {(() => {
+            // idle -> listening -> transcribing -> thinking -> speaking -> idle.
+            // Derived, not stored — each phase already comes from an
+            // existing, independently-owned piece of state (useVoiceInput's
+            // voiceState, this component's own transcribing/thinking, and
+            // useEsmereldaSpeech's isSpeaking).
+            const phase =
+              voiceState === "listening"
+                ? "listening"
+                : transcribing
+                  ? "transcribing"
+                  : thinking
+                    ? "thinking"
+                    : isSpeaking
+                      ? "speaking"
+                      : "idle";
+            const orbState = phase === "listening" || phase === "speaking" ? "active" : phase === "idle" ? "idle" : "processing";
+            const phaseLabel =
+              phase === "listening"
+                ? "Listening…"
+                : phase === "transcribing"
+                  ? "Transcribing…"
+                  : phase === "thinking"
+                    ? "Thinking…"
+                    : phase === "speaking"
+                      ? "Speaking…"
+                      : null;
+
+            return (
+              <>
+                <div className="relative">
+                  <AiCore size="lg" state={orbState} energyRef={phase === "speaking" ? energyRef : undefined} />
+                  {phaseLabel && (
+                    <span className="absolute -bottom-1 left-1/2 flex -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-full border border-cyan-500/40 bg-graphite-950/85 px-2.5 py-1 text-[11px] font-medium text-cyan-300 backdrop-blur-sm">
+                      <span className="size-1.5 animate-pulse rounded-full bg-cyan-400" />
+                      {phaseLabel}
+                    </span>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleMicClick}
+                  disabled={voiceState === "unsupported"}
+                  aria-label={
+                    phase === "listening"
+                      ? "Stop listening"
+                      : voiceState === "permission-denied"
+                        ? "Microphone access denied"
+                        : voiceState === "unsupported"
+                          ? "Voice input not supported in this browser"
+                          : phase === "speaking"
+                            ? "Interrupt and talk to Esmerelda"
+                            : "Talk to Esmerelda"
+                  }
+                  title={
+                    voiceState === "permission-denied"
+                      ? "Microphone access was denied — check your browser's site permissions."
+                      : voiceState === "unsupported"
+                        ? "This browser doesn't support microphone recording."
+                        : undefined
+                  }
+                  className={cn(
+                    "mt-5 flex size-11 items-center justify-center rounded-full border transition-colors",
+                    phase === "listening" && "border-cyan-500/60 bg-cyan-500/15 text-cyan-300",
+                    voiceState === "permission-denied" && "border-status-critical/40 bg-status-critical/10 text-status-critical",
+                    voiceState === "unsupported" && "cursor-not-allowed border-graphite-700/60 bg-graphite-850/60 text-graphite-600",
+                    voiceState !== "unsupported" &&
+                      voiceState !== "permission-denied" &&
+                      phase !== "listening" &&
+                      "border-graphite-600/70 bg-graphite-850/70 text-graphite-200 hover:border-cyan-500/50 hover:text-cyan-200"
+                  )}
+                >
+                  {voiceState === "unsupported" ? (
+                    <MicOff size={18} />
+                  ) : voiceState === "permission-denied" ? (
+                    <TriangleAlert size={18} />
+                  ) : (
+                    <Mic size={18} />
+                  )}
+                </button>
+
+                <p className="mt-2 text-xs text-graphite-500">
+                  {phase === "listening" && "Listening… tap to stop"}
+                  {phase === "transcribing" && "Transcribing…"}
+                  {phase === "thinking" && "Thinking…"}
+                  {phase === "speaking" && "Speaking… tap to interrupt"}
+                  {phase === "idle" && voiceState === "idle" && !transcript && !voiceError && "Tap to talk to Esmerelda"}
+                  {phase === "idle" && voiceState === "stopped" && (transcript || voiceError) && "Tap to talk again"}
+                  {voiceState === "permission-denied" && "Microphone access was denied"}
+                  {voiceState === "unsupported" && "Voice input isn't supported in this browser"}
+                </p>
+
+                {transcript && (
+                  <div className="mt-3 max-w-md rounded-2xl border border-graphite-700/60 bg-graphite-850/60 px-4 py-2.5 text-sm text-graphite-200">
+                    <span className="text-graphite-500">Esmerelda heard:</span> "{transcript}"
+                  </div>
+                )}
+                {voiceError && (
+                  <div className="mt-3 max-w-md rounded-2xl border border-status-critical/30 bg-status-critical/5 px-4 py-2.5 text-sm text-status-critical">
+                    {voiceError}
+                  </div>
+                )}
+              </>
+            );
+          })()}
         </div>
 
         <h2 className="relative mt-6 font-display text-3xl font-semibold tracking-tight text-warm-50 sm:text-4xl">
