@@ -36,6 +36,33 @@ const VOICE_ACTIVITY_THRESHOLD = 0.09;
 const SILENCE_ENERGY_THRESHOLD = 0.05;
 const SILENCE_STOP_DELAY_MS = 1400;
 const MAX_RECORDING_MS = 30_000;
+// A brief noise transient — the mic stream's own start-up "pop", a key
+// click, a door — can cross VOICE_ACTIVITY_THRESHOLD for a single frame
+// or two without being real speech. Previously, one such frame was
+// enough to latch hasDetectedSpeech permanently true; if the user's real
+// first word then came more than SILENCE_STOP_DELAY_MS later (very
+// plausible — reacting to the "Listening" indicator takes a moment),
+// the recording auto-stopped on what was actually near-silence, which
+// is exactly what makes Whisper hallucinate "Thank you." (a well-known
+// artifact for silent/empty audio, not a transcription error). Requiring
+// the energy to stay above threshold continuously for this long before
+// it's trusted as "real speech has started" filters out that class of
+// transient without meaningfully delaying detection of genuine speech,
+// which lasts far longer than this.
+const VOICE_ACTIVITY_SUSTAIN_MS = 150;
+// A first attempt at the fix above used micEnergyRef itself (the same
+// slow-release-smoothed value the Orb displays) for this sustain check —
+// verified, by actually reproducing the bug, NOT to work: that value's
+// own RELEASE smoothing (0.15/frame) takes roughly 250ms to decay back
+// below VOICE_ACTIVITY_THRESHOLD after even a near-instantaneous loud
+// transient, which is longer than the 150ms sustain window itself — so a
+// single blip's smoothed *afterglow* alone could still satisfy "150ms
+// continuously above threshold", defeating the whole point. Fixed with a
+// second, independent, much-faster-decaying energy reading used only for
+// this VAD decision (never for the Orb's own — intentionally slow,
+// organic-looking — visual smoothing, which is untouched).
+const VAD_ENERGY_ATTACK = 0.6;
+const VAD_ENERGY_RELEASE = 0.6;
 
 interface UseVoiceInputResult {
   state: VoiceInputState;
@@ -51,6 +78,14 @@ interface UseVoiceInputResult {
    * itself is entirely unaffected either way — see `startMicEnergyLoop`).
    */
   micEnergyRef: RefObject<number>;
+  /**
+   * An id unique to the most recent `start()` call — increments every
+   * recording. Dev-only diagnostic aid (see BUILD_LOG.md's "thank you"
+   * regression entry) for correlating "this Blob/transcript came from
+   * *this* recording" across the console log lines below and
+   * Dashboard.tsx's own `[VOICE]` pipeline logs.
+   */
+  recordingId: number;
   /** Requests mic access (if needed) and starts recording. Always starts a fresh recording — any previous Blob is discarded. */
   start: () => Promise<void>;
   /** Stops the active recording; `state` becomes "stopped" once the Blob is assembled. No-op if not currently listening. */
@@ -71,11 +106,13 @@ function isVoiceInputSupported(): boolean {
 export function useVoiceInput(): UseVoiceInputResult {
   const [state, setState] = useState<VoiceInputState>(() => (isVoiceInputSupported() ? "idle" : "unsupported"));
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+  const [recordingId, setRecordingId] = useState(0);
 
   const streamRef = useRef<MediaStream | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const mountedRef = useRef(true);
+  const recordingIdRef = useRef(0); // the synchronous source of truth start()/onstop read; recordingId (state) mirrors it for consumers
 
   const micEnergyRef = useRef(0);
   const micAudioCtxRef = useRef<AudioContext | null>(null);
@@ -135,8 +172,11 @@ export function useVoiceInput(): UseVoiceInputResult {
     }
 
     let hasDetectedSpeech = false;
+    let voiceStartedAt: number | null = null; // when energy most recently crossed above VOICE_ACTIVITY_THRESHOLD, still unconfirmed
     let silenceStartedAt: number | null = null;
+    let vadEnergy = 0; // fast-decaying, VAD-only — see VAD_ENERGY_ATTACK/RELEASE's comment above
     const recordingStartedAt = performance.now();
+    let lastVadLog = 0;
 
     const tick = () => {
       const analyser = micAnalyserRef.current;
@@ -155,22 +195,59 @@ export function useVoiceInput(): UseVoiceInputResult {
       micEnergyRef.current += (target - micEnergyRef.current) * rate;
       if (micEnergyRef.current < MIC_ENERGY_IDLE_THRESHOLD) micEnergyRef.current = 0;
 
+      // VAD-only reading — same raw `target`, independent fast-decaying
+      // smoothing so a brief transient's "afterglow" clears in ~30-50ms,
+      // well inside VOICE_ACTIVITY_SUSTAIN_MS, instead of the ~250ms the
+      // Orb's own display smoothing takes. Never used for anything the
+      // user sees.
+      const vadRate = target > vadEnergy ? VAD_ENERGY_ATTACK : VAD_ENERGY_RELEASE;
+      vadEnergy += (target - vadEnergy) * vadRate;
+
       const now = performance.now();
 
+      if (import.meta.env.DEV && now - lastVadLog > 500) {
+        lastVadLog = now;
+        console.debug("[VOICE] VAD tick", {
+          displayEnergy: Number(micEnergyRef.current.toFixed(3)),
+          vadEnergy: Number(vadEnergy.toFixed(3)),
+          hasDetectedSpeech,
+          sustainingVoiceMs: voiceStartedAt != null ? Math.round(now - voiceStartedAt) : null,
+          silenceMs: silenceStartedAt != null ? Math.round(now - silenceStartedAt) : null,
+          elapsedMs: Math.round(now - recordingStartedAt),
+        });
+      }
+
       if (now - recordingStartedAt >= MAX_RECORDING_MS) {
+        if (import.meta.env.DEV) console.debug("[VOICE] VAD stop reason: max recording duration reached");
         stop(); // hard cap — never record forever regardless of what the user is doing
         return;
       }
 
-      if (micEnergyRef.current >= VOICE_ACTIVITY_THRESHOLD) {
-        hasDetectedSpeech = true;
+      if (vadEnergy >= VOICE_ACTIVITY_THRESHOLD) {
+        if (!hasDetectedSpeech) {
+          // Require the (fast-decaying) VAD energy to stay above threshold
+          // continuously for VOICE_ACTIVITY_SUSTAIN_MS before trusting it
+          // as real speech — see the constants' own comments for why a
+          // single frame above threshold, or even the slower display
+          // energy, isn't enough (both let a brief mic-start pop/click or
+          // noise blip permanently latch as "speech").
+          if (voiceStartedAt == null) voiceStartedAt = now;
+          else if (now - voiceStartedAt >= VOICE_ACTIVITY_SUSTAIN_MS) {
+            hasDetectedSpeech = true;
+            if (import.meta.env.DEV) console.debug("[VOICE] sustained speech confirmed, silence countdown now armed");
+          }
+        }
         silenceStartedAt = null;
-      } else if (hasDetectedSpeech && micEnergyRef.current < SILENCE_ENERGY_THRESHOLD) {
-        if (silenceStartedAt == null) {
-          silenceStartedAt = now;
-        } else if (now - silenceStartedAt >= SILENCE_STOP_DELAY_MS) {
-          stop(); // sustained silence after real speech was heard — stop() -> onstop -> releaseStream tears this loop down
-          return;
+      } else {
+        voiceStartedAt = null; // energy dropped before sustaining long enough — was a transient, not speech
+        if (hasDetectedSpeech && vadEnergy < SILENCE_ENERGY_THRESHOLD) {
+          if (silenceStartedAt == null) {
+            silenceStartedAt = now;
+          } else if (now - silenceStartedAt >= SILENCE_STOP_DELAY_MS) {
+            if (import.meta.env.DEV) console.debug("[VOICE] VAD stop reason: sustained silence after confirmed speech");
+            stop(); // sustained silence after real speech was heard — stop() -> onstop -> releaseStream tears this loop down
+            return;
+          }
         }
       }
       // Energy between the two thresholds (or below SILENCE before any
@@ -196,6 +273,8 @@ export function useVoiceInput(): UseVoiceInputResult {
 
     chunksRef.current = [];
     setAudioBlob(null);
+    const thisRecordingId = ++recordingIdRef.current;
+    setRecordingId(thisRecordingId);
 
     let stream: MediaStream;
     try {
@@ -217,11 +296,23 @@ export function useVoiceInput(): UseVoiceInputResult {
     const mimeType = window.MediaRecorder.isTypeSupported?.("audio/webm") ? "audio/webm" : undefined;
     const recorder = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
 
+    if (import.meta.env.DEV) {
+      console.debug("[VOICE] recording start", { recordingId: thisRecordingId, mimeType: recorder.mimeType });
+    }
+
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) chunksRef.current.push(event.data);
     };
     recorder.onstop = () => {
       const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
+      if (import.meta.env.DEV) {
+        console.debug("[VOICE] recording stop", {
+          recordingId: thisRecordingId,
+          chunkCount: chunksRef.current.length,
+          blobSize: blob.size,
+          blobType: blob.type,
+        });
+      }
       releaseStream(); // also stops the mic-energy loop (see releaseStream)
       if (mountedRef.current) {
         setAudioBlob(blob);
@@ -252,5 +343,5 @@ export function useVoiceInput(): UseVoiceInputResult {
     };
   }, [releaseStream]);
 
-  return { state, audioBlob, micEnergyRef, start, stop, reset };
+  return { state, audioBlob, micEnergyRef, recordingId, start, stop, reset };
 }

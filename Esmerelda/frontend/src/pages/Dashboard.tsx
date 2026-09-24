@@ -57,6 +57,7 @@ export default function Dashboard() {
     state: voiceState,
     audioBlob,
     micEnergyRef,
+    recordingId,
     start: startVoiceInput,
     stop: stopVoiceInput,
   } = useVoiceInput();
@@ -155,6 +156,15 @@ export default function Dashboard() {
     if (!audioBlob) return;
     const myPipelineId = pipelineIdRef.current;
 
+    if (import.meta.env.DEV) {
+      console.debug("[VOICE] transcription request", {
+        recordingId,
+        pipelineId: myPipelineId,
+        blobSize: audioBlob.size,
+        blobType: audioBlob.type,
+      });
+    }
+
     (async () => {
       setTranscribing(true);
       setTranscript(null);
@@ -164,11 +174,13 @@ export default function Dashboard() {
       try {
         heard = await transcribeAudio(audioBlob);
       } catch (err) {
+        if (import.meta.env.DEV) console.debug("[VOICE] transcription response", { recordingId, pipelineId: myPipelineId, error: String(err) });
         if (pipelineIdRef.current !== myPipelineId) return;
         setTranscribing(false);
         setVoiceError(err instanceof TranscriptionUnavailableError ? err.message : "Transcription failed.");
         return;
       }
+      if (import.meta.env.DEV) console.debug("[VOICE] transcription response", { recordingId, pipelineId: myPipelineId, text: heard });
       if (pipelineIdRef.current !== myPipelineId) return;
       setTranscribing(false);
 
