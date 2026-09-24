@@ -21,9 +21,18 @@ import { DocumentIndexRow } from "@/components/ui/DocumentIndexRow";
 import { EmptyState } from "@/components/ui/EmptyState";
 import { ErrorState } from "@/components/ui/ErrorState";
 import { ListSkeleton, Skeleton } from "@/components/ui/LoadingSkeleton";
+import { ProactiveNotifications } from "@/components/ui/ProactiveNotifications";
 import { getAssignmentUrgency, relativeTimeFromNow, cn } from "@/lib/utils";
 import { useVoiceInput } from "@/hooks/useVoiceInput";
 import { useEsmereldaSpeech } from "@/lib/useEsmereldaSpeech";
+import { appendVoiceTurn, getVoiceConversation } from "@/lib/voiceConversation";
+
+// How many prior turns of the voice conversation are sent with each new
+// message — client-side half of the "don't send the entire conversation
+// forever" requirement (the backend independently caps again on its own
+// side; see groq_agent.py's _MAX_HISTORY_MESSAGES). 8 messages = the last
+// 4 user/assistant exchanges.
+const VOICE_HISTORY_MAX_MESSAGES = 8;
 
 function useGreetingWord(): string {
   const hour = new Date().getHours();
@@ -44,7 +53,13 @@ export default function Dashboard() {
   const [command, setCommand] = useState("");
 
   const { data: name } = useAsync(getStudentName, []);
-  const { state: voiceState, audioBlob, start: startVoiceInput, stop: stopVoiceInput } = useVoiceInput();
+  const {
+    state: voiceState,
+    audioBlob,
+    micEnergyRef,
+    start: startVoiceInput,
+    stop: stopVoiceInput,
+  } = useVoiceInput();
   // Same hook Chat.tsx uses for its own auto-speak — a separate instance
   // (its own <audio> element/AudioContext), not a shared one, since only
   // one of these two pages is ever mounted at a time. No new TTS or
@@ -59,6 +74,11 @@ export default function Dashboard() {
   // earlier response could arrive and start speaking (or overwrite the
   // displayed transcript) after the user has already moved on.
   const pipelineIdRef = useRef(0);
+  // The logical voice conversation's identity/history now lives in
+  // lib/voiceConversation.ts, shared with Chat.tsx — see that module's
+  // own comment for why a component-local ref (used here before this
+  // change) isn't enough: it wouldn't survive navigating to Conversations
+  // and back (Part E of this batch).
   const { data: summary, error: summaryError, refetch: refetchSummary } = useAsync(getDashboardSummary, []);
   const {
     data: assignments,
@@ -157,17 +177,40 @@ export default function Dashboard() {
       if (!trimmed) return; // nothing to send Esmerelda
 
       setThinking(true);
-      let reply: string;
+      let res: Awaited<ReturnType<typeof sendChatMessage>>;
       try {
-        const res = await sendChatMessage(trimmed);
-        reply = res.reply;
+        const { conversationId, history } = getVoiceConversation();
+        res = await sendChatMessage(trimmed, { conversationId, history });
       } catch (err) {
         if (pipelineIdRef.current !== myPipelineId) return;
         setThinking(false);
         setVoiceError(err instanceof ChatUnavailableError ? err.message : "Esmerelda couldn't respond.");
         return;
       }
-      if (pipelineIdRef.current !== myPipelineId) return;
+      if (pipelineIdRef.current !== myPipelineId) return; // superseded while the reply was in flight — don't remember a turn the user already moved past, and don't let a stale decision navigate anywhere
+      const { reply, responseMode, assignments, courses, documents, sources, followUps } = res;
+      // Only a genuinely completed exchange is remembered — an
+      // interrupted/superseded turn never reaches here, so a stale
+      // response can never mutate the conversation the user is actually
+      // having. The same shared module Chat.tsx reads/writes (see Part D/E
+      // of this batch) — not a second history mechanism.
+      appendVoiceTurn(trimmed, reply, VOICE_HISTORY_MAX_MESSAGES);
+
+      if (responseMode === "visual") {
+        // Belt-and-braces: handleMicClick() already stops any playing TTS
+        // the instant a new recording starts, so there's normally nothing
+        // to stop here — but a response can also arrive stale-free with
+        // an OLDER turn's audio still finishing, so this stays explicit.
+        stopSpeaking();
+        setThinking(false);
+        navigate("/chat", {
+          state: {
+            voiceHandoff: { userMessage: trimmed, reply, assignments, courses, documents, sources, followUps },
+          },
+        });
+        return; // visual responses are read, not spoken — no speak() call
+      }
+
       // Deliberately still "thinking" (not yet reset) here: speak() itself
       // takes a moment to generate audio before playback actually starts
       // (see api/tts.py) — resetting `thinking` before that would flash
@@ -177,7 +220,7 @@ export default function Dashboard() {
       await speak(reply); // isSpeaking/energyRef drive the Orb's existing "active" + speech-reactive look
       if (pipelineIdRef.current === myPipelineId) setThinking(false);
     })();
-  }, [audioBlob]);
+  }, [audioBlob, navigate, speak, stopSpeaking]);
 
   const greeting = useGreetingWord();
 
@@ -212,8 +255,10 @@ export default function Dashboard() {
                     ? "thinking"
                     : isSpeaking
                       ? "speaking"
-                      : "idle";
-            const orbState = phase === "listening" || phase === "speaking" ? "active" : phase === "idle" ? "idle" : "processing";
+                      : voiceError
+                        ? "error"
+                        : "idle";
+            const orbState = phase === "listening" || phase === "speaking" ? "active" : phase === "idle" || phase === "error" ? "idle" : "processing";
             const phaseLabel =
               phase === "listening"
                 ? "Listening…"
@@ -228,7 +273,13 @@ export default function Dashboard() {
             return (
               <>
                 <div className="relative">
-                  <AiCore size="lg" state={orbState} energyRef={phase === "speaking" ? energyRef : undefined} />
+                  <AiCore
+                    size="lg"
+                    state={orbState}
+                    phase={phase === "listening" || phase === "speaking" || phase === "transcribing" || phase === "thinking" ? phase : undefined}
+                    energyRef={phase === "speaking" ? energyRef : phase === "listening" ? micEnergyRef : undefined}
+                    className={phase === "error" ? "[filter:hue-rotate(180deg)_saturate(0.7)]" : undefined}
+                  />
                   {phaseLabel && (
                     <span className="absolute -bottom-1 left-1/2 flex -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-full border border-cyan-500/40 bg-graphite-950/85 px-2.5 py-1 text-[11px] font-medium text-cyan-300 backdrop-blur-sm">
                       <span className="size-1.5 animate-pulse rounded-full bg-cyan-400" />
@@ -284,8 +335,9 @@ export default function Dashboard() {
                   {phase === "transcribing" && "Transcribing…"}
                   {phase === "thinking" && "Thinking…"}
                   {phase === "speaking" && "Speaking… tap to interrupt"}
-                  {phase === "idle" && voiceState === "idle" && !transcript && !voiceError && "Tap to talk to Esmerelda"}
-                  {phase === "idle" && voiceState === "stopped" && (transcript || voiceError) && "Tap to talk again"}
+                  {phase === "idle" && voiceState === "idle" && !transcript && "Tap to talk to Esmerelda"}
+                  {phase === "idle" && voiceState === "stopped" && transcript && "Tap to talk again"}
+                  {phase === "error" && "Tap to try again"}
                   {voiceState === "permission-denied" && "Microphone access was denied"}
                   {voiceState === "unsupported" && "Voice input isn't supported in this browser"}
                 </p>
@@ -333,18 +385,38 @@ export default function Dashboard() {
             <>
               <span>{summary.coursesCount} active courses</span>
               <span className="hidden text-graphite-700 sm:inline">•</span>
+              <span>
+                {summary.assignmentsCount} assignments · {summary.resourcesCount} resources
+              </span>
+              <span className="hidden text-graphite-700 sm:inline">•</span>
               <span>{summary.documentsCount} documents indexed</span>
               <span className="hidden text-graphite-700 sm:inline">•</span>
               <span>
-                {summary.sync.lastSyncedAt
-                  ? `Synced ${relativeTimeFromNow(summary.sync.lastSyncedAt)}`
-                  : "Not synced yet"}
+                {summary.sync.state === "syncing"
+                  ? "Syncing Moodle…"
+                  : summary.sync.lastSyncedAt
+                    ? `Synced ${relativeTimeFromNow(summary.sync.lastSyncedAt)}`
+                    : "Not synced yet"}
               </span>
+              {!!summary.newItemsCount && (
+                <>
+                  <span className="hidden text-graphite-700 sm:inline">•</span>
+                  <span className="text-cyan-300">
+                    {summary.newItemsCount} new {summary.newItemsCount === 1 ? "item" : "items"}
+                  </span>
+                </>
+              )}
             </>
           ) : (
             <span>Checking system status…</span>
           )}
         </div>
+
+        {summary && summary.notifications.length > 0 && (
+          <div className="relative mt-4 w-full max-w-2xl">
+            <ProactiveNotifications notifications={summary.notifications} />
+          </div>
+        )}
 
         <div className="relative mt-10 w-full max-w-2xl">
           <CommandInput

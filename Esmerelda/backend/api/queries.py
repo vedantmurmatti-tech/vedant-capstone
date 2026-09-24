@@ -237,8 +237,9 @@ def fetch_sync_status(db: Session) -> SyncStatusOut:
     )
 
 
-def fetch_dashboard_counts(db: Session) -> tuple[int, int, int]:
+def fetch_dashboard_counts(db: Session) -> tuple[int, int, int, int]:
     courses_count = db.query(func.count(Course.id)).scalar() or 0
     assignments_count = db.query(func.count(Assignment.id)).scalar() or 0
+    resources_count = db.query(func.count(Resource.id)).scalar() or 0
     documents_count = db.query(func.count(Document.id)).scalar() or 0
-    return courses_count, assignments_count, documents_count
+    return courses_count, assignments_count, resources_count, documents_count

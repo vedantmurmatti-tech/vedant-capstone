@@ -43,6 +43,7 @@ from sqlalchemy.orm import Session
 from .followups import generate_followups
 from .gemini_tools import ToolCollector, build_tools
 from .mcp_bridge import McpCallLog, sqlite_mcp_session
+from .response_mode import RESPONSE_MODE_SYSTEM_PROMPT_ADDITION, build_visual_context, extract_response_mode
 from .schemas import ChatResponseOut, McpCallOut
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -93,7 +94,7 @@ Rules you must never break:
 5. Keep answers concise and factual.
 6. If the question is unrelated to courses/assignments/documents, you may answer briefly
    without a tool call, but stay focused — you are an academic assistant, not a
-   general-purpose chatbot."""
+   general-purpose chatbot.""" + RESPONSE_MODE_SYSTEM_PROMPT_ADDITION
 
 
 class GeminiUnavailableError(Exception):
@@ -108,7 +109,14 @@ def _get_client() -> genai.Client:
     return genai.Client(api_key=api_key)
 
 
-async def handle_chat_message_gemini(db: Session, message: str) -> ChatResponseOut:
+# Same defensive cap as groq_agent.py's _MAX_HISTORY_MESSAGES — independent
+# of whatever the client already trimmed to.
+_MAX_HISTORY_MESSAGES = 12
+
+
+async def handle_chat_message_gemini(
+    db: Session, message: str, history: list[dict[str, str]] | None = None
+) -> ChatResponseOut:
     try:
         client = _get_client()
     except GeminiUnavailableError:
@@ -122,9 +130,18 @@ async def handle_chat_message_gemini(db: Session, message: str) -> ChatResponseO
 
     async def run_chat(tools: list) -> str:
         try:
+            # Gemini's own history shape uses "model" (not "assistant") for
+            # the AI's turns — translated here, at the boundary, from the
+            # shared {"role": "user"|"assistant", "content": ...} shape
+            # chat_agent.py passes to every tier alike.
+            gemini_history = [
+                {"role": "model" if turn["role"] == "assistant" else "user", "parts": [{"text": turn["content"]}]}
+                for turn in (history or [])[-_MAX_HISTORY_MESSAGES:]
+            ]
             chat = client.aio.chats.create(
                 model=MODEL,
                 config=types.GenerateContentConfig(tools=tools, system_instruction=SYSTEM_INSTRUCTION),
+                history=gemini_history or None,
             )
             response = await chat.send_message(message)
         except Exception as exc:
@@ -146,6 +163,9 @@ async def handle_chat_message_gemini(db: Session, message: str) -> ChatResponseO
     courses = list(collector.courses.values())
     documents = list(collector.documents.values())
 
+    reply_text, response_mode = extract_response_mode(reply_text)
+    visual_context = build_visual_context(assignments, courses, documents) if response_mode == "visual" else None
+
     return ChatResponseOut(
         reply=reply_text,
         assignments=assignments,
@@ -164,4 +184,6 @@ async def handle_chat_message_gemini(db: Session, message: str) -> ChatResponseO
             McpCallOut(server=c.server, tool=c.tool, arguments=c.arguments, isError=c.is_error)
             for c in call_log.calls
         ],
+        responseMode=response_mode,
+        visualContext=visual_context,
     )

@@ -18,6 +18,15 @@ interface AiCoreProps {
    * component behaves exactly as it did before this prop existed.
    */
   energyRef?: React.RefObject<number>;
+  /**
+   * Optional finer-grained hint for what an "active"/"processing" state
+   * actually represents, so visually-distinct real phases (listening vs
+   * speaking; transcribing vs thinking) don't have to look identical.
+   * Omit it (as every existing caller did before this prop existed —
+   * `Dashboard.tsx`'s own idle-state orbs and every orb in `Chat.tsx`)
+   * and `state="active"`/`"processing"` look exactly as they always have.
+   */
+  phase?: "listening" | "speaking" | "transcribing" | "thinking";
 }
 
 const sizePx: Record<NonNullable<AiCoreProps["size"]>, number> = {
@@ -32,7 +41,7 @@ const sizePx: Record<NonNullable<AiCoreProps["size"]>, number> = {
  * decorative/ambient; state changes (idle/active/processing) only
  * affect animation speed and glow intensity, never blocking content.
  */
-export function AiCore({ size = "lg", state = "idle", className, energyRef }: AiCoreProps) {
+export function AiCore({ size = "lg", state = "idle", className, energyRef, phase }: AiCoreProps) {
   const reduceMotion = useReducedMotion();
   const uid = useId();
   const px = sizePx[size];
@@ -40,6 +49,16 @@ export function AiCore({ size = "lg", state = "idle", className, energyRef }: Ai
 
   const outerGradientId = `core-outer-${uid}`;
   const coreGradientId = `core-center-${uid}`;
+
+  // "processing" previously always used a single fixed timing (1.6s core
+  // breathe / 4s ring rotation / 6s outer ring), for both transcribing and
+  // thinking alike. Kept as the default here (so any caller that doesn't
+  // pass `phase` — every existing one — sees pixel-identical durations to
+  // before) while `phase` lets transcribing feel like a quick processing
+  // burst and thinking feel slower and more deliberate, distinct from it.
+  const coreBreatheDuration = state !== "processing" ? undefined : phase === "transcribing" ? "0.9s" : phase === "thinking" ? "2.6s" : "1.6s";
+  const midRingDuration = state !== "processing" ? undefined : phase === "transcribing" ? "2s" : phase === "thinking" ? "5.5s" : "4s";
+  const outerRingDuration = state !== "processing" ? undefined : phase === "transcribing" ? "3s" : phase === "thinking" ? "8s" : "6s";
 
   const glowRef = useRef<HTMLDivElement>(null);
   const coreRef = useRef<SVGCircleElement>(null);
@@ -139,7 +158,7 @@ export function AiCore({ size = "lg", state = "idle", className, energyRef }: Ai
           strokeDasharray="2 5"
           opacity="0.55"
           className={cn(!reduceMotion && "origin-center", !reduceMotion && "animate-[var(--animate-orb-rotate-slow)]")}
-          style={{ transformOrigin: "50px 50px", animationDuration: state === "processing" ? "6s" : undefined }}
+          style={{ transformOrigin: "50px 50px", animationDuration: outerRingDuration }}
         />
 
         {/* middle solid ring with gaps, counter-rotating */}
@@ -154,10 +173,12 @@ export function AiCore({ size = "lg", state = "idle", className, energyRef }: Ai
           strokeDasharray="40 18 6 18"
           opacity="0.5"
           className={cn(!reduceMotion && "animate-[var(--animate-orb-rotate-fast)] transition-[stroke-width] duration-150 ease-out")}
-          style={{ transformOrigin: "50px 50px", animationDuration: state === "processing" ? "4s" : undefined }}
+          style={{ transformOrigin: "50px 50px", animationDuration: midRingDuration }}
         />
 
-        {/* inner fine ring */}
+        {/* inner fine ring — gets a slow, deliberate opacity pulse only
+            during "thinking", distinguishing it from the quicker
+            "transcribing" burst without adding a new element */}
         <circle
           cx="50"
           cy="50"
@@ -166,6 +187,7 @@ export function AiCore({ size = "lg", state = "idle", className, energyRef }: Ai
           stroke="var(--color-graphite-300)"
           strokeWidth="0.3"
           opacity="0.35"
+          className={cn(!reduceMotion && state === "processing" && phase === "thinking" && "animate-[var(--animate-thinking-pulse)]")}
         />
 
         {/* orbiting particles, riding the outer ring's rotation */}
@@ -185,7 +207,7 @@ export function AiCore({ size = "lg", state = "idle", className, energyRef }: Ai
           r="17"
           fill={`url(#${coreGradientId})`}
           className={cn(!reduceMotion && "animate-[var(--animate-core-breathe)] transition-transform duration-150 ease-out")}
-          style={{ animationDuration: state === "processing" ? "1.6s" : undefined, transformOrigin: "50px 50px" }}
+          style={{ animationDuration: coreBreatheDuration, transformOrigin: "50px 50px" }}
         />
         <circle cx="50" cy="50" r="17" fill="none" stroke="var(--color-cyan-200)" strokeWidth="0.4" opacity="0.5" />
       </svg>

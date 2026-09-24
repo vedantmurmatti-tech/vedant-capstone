@@ -554,6 +554,25 @@ def get_latest_sync_run() -> SyncRun | None:
         return run
 
 
+def get_last_two_successful_sync_runs() -> list[SyncRun]:
+    """The two most recent status="success" SyncRun rows, newest first —
+    used only to report an honest "N new items since last sync" signal
+    (see api/queries.py's fetch_new_items_since_last_sync) by comparing
+    their already-stored courses_synced/assignments_synced/resources_synced
+    counts. Returns fewer than 2 rows (possibly none) if there aren't
+    that many successful syncs yet — callers must handle that, not assume
+    a comparison is always possible."""
+    with SessionLocal() as session:
+        runs = list(
+            session.scalars(
+                select(SyncRun).where(SyncRun.status == "success").order_by(SyncRun.id.desc()).limit(2)
+            )
+        )
+        for run in runs:
+            session.expunge(run)
+        return runs
+
+
 # TEMPORARY diagnostic functions (see BUILD_LOG.md) — database-backed
 # specifically because an earlier, in-process-only implementation was
 # found not to be reliably visible from a separate API request on

@@ -6,6 +6,8 @@ needed in frontend/src/lib/api.ts.
 """
 
 from datetime import datetime
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -77,17 +79,60 @@ class SyncTriggerOut(BaseModel):
     state: str
 
 
+class ProactiveNotificationOut(BaseModel):
+    """One concise, real, non-fabricated academic notice (see
+    api/notifications.py) — always derived from actual stored Moodle data
+    (Assignment.due_date, or a real growth in SyncRun's own already-stored
+    per-run counts), never invented. `kind` is a small closed set the
+    frontend can style by, not free-form text."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str
+    kind: Literal["due_soon", "new_content", "sync_error"]
+    message: str
+    courseId: int | None = None
+    assignmentId: int | None = None
+
+
 class DashboardSummaryOut(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     coursesCount: int
     assignmentsCount: int
+    resourcesCount: int
     documentsCount: int
     sync: SyncStatusOut
+    # None when there's no earlier successful sync to compare against yet
+    # (nothing fabricated in that case — just genuinely unknown); 0 or more
+    # otherwise, computed from two real, already-stored SyncRun rows.
+    newItemsCount: int | None = None
+    notifications: list[ProactiveNotificationOut] = []
+
+
+class ChatHistoryTurnIn(BaseModel):
+    """One prior turn of the SAME logical conversation (see chat_agent.py's
+    `handle_chat_message` — this is not a second reasoning/history system,
+    just the shape a caller sends prior turns in, mirroring the
+    role/content pairs already used for Groq/Gemini's own messages)."""
+
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=4000)
 
 
 class ChatRequestIn(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
+    # Optional — an explicit label for the logical conversation this
+    # message belongs to (e.g. one continuous voice session on the Orb).
+    # Never used to look anything up server-side (this backend keeps no
+    # server-side session state at all — see BUILD_LOG.md); it exists so
+    # the caller has one, and so it can appear in logs for correlation.
+    conversationId: str | None = Field(default=None, max_length=100)
+    # Optional prior turns of the SAME conversation, oldest first. Capped
+    # here defensively (independently of whatever the client already
+    # trimmed to) so no single request can smuggle in unbounded context —
+    # see chat_agent.py's own additional cap on top of this one.
+    history: list[ChatHistoryTurnIn] = Field(default_factory=list, max_length=16)
 
 
 class SpeechRequestIn(BaseModel):
@@ -129,3 +174,13 @@ class ChatResponseOut(BaseModel):
     sources: list[ChatSourceOut] = []
     followUps: list[str] = []
     mcpCalls: list[McpCallOut] = []
+    # Set by api/response_mode.py from the reasoning layer's own trailing
+    # marker in its reply text — never taken from the model unvalidated.
+    # Always exactly "voice" or "visual"; a missing/malformed decision from
+    # the model always resolves to "voice" before it ever reaches here.
+    responseMode: Literal["voice", "visual"] = "voice"
+    # Only ever a small, fixed set of booleans (see build_visual_context())
+    # — never arbitrary model output, never a route, never anything
+    # executable. Present only when responseMode is "visual" AND there is
+    # real, already tool-collected data to point at.
+    visualContext: dict[str, bool] | None = None

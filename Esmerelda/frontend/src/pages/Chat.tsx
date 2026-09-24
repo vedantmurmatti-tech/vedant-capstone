@@ -3,12 +3,33 @@ import { Link, useLocation } from "react-router-dom";
 import { Plus, WifiOff, FileText, ArrowUpRight, Download, ClipboardList, BookOpen } from "lucide-react";
 import { getDocumentDownloadUrl, sendChatMessage } from "@/lib/api";
 import { suggestedPrompts } from "@/lib/mockData";
-import type { ChatMessage } from "@/types";
+import type { Assignment, ChatMessage, ChatSource, Course, DocumentFile } from "@/types";
 import { AiCore } from "@/components/core/AiCore";
 import { CommandInput } from "@/components/ui/CommandInput";
 import { ChatMarkdown } from "@/components/ui/ChatMarkdown";
 import { formatDateTime, getAssignmentUrgency, cn } from "@/lib/utils";
 import { useEsmereldaSpeech } from "@/lib/useEsmereldaSpeech";
+import { appendVoiceTurn, getVoiceConversation, resetVoiceConversation } from "@/lib/voiceConversation";
+
+// Same cap Dashboard.tsx's voice loop uses — kept in sync manually since
+// each page trims client-side before sending (the backend independently
+// caps again regardless of what either client sends).
+const HISTORY_MAX_MESSAGES = 8;
+
+// What Dashboard.tsx hands off via `navigate("/chat", { state: { voiceHandoff } })`
+// when the reasoning layer decides a voice exchange needs a visual surface
+// (see BUILD_LOG.md's "Batch 1" entry) — an already-computed exchange, never
+// re-sent to the backend here, so arriving via voice never duplicates the
+// Groq/Gemini call or risks a different answer than what was already spoken/decided.
+interface VoiceHandoff {
+  userMessage: string;
+  reply: string;
+  assignments: Assignment[];
+  courses: Course[];
+  documents: DocumentFile[];
+  sources: ChatSource[];
+  followUps: string[];
+}
 
 function newId(): string {
   return Math.random().toString(36).slice(2, 10);
@@ -22,6 +43,13 @@ export default function Chat() {
   const [reachable, setReachable] = useState(true);
   const scrollRef = useRef<HTMLDivElement>(null);
   const consumedInitial = useRef(false);
+  const consumedVoiceHandoff = useRef(false);
+  // True only once this Conversations session has actually received a
+  // voice handoff (or the user continues typing after one) — until then,
+  // submitMessage() sends exactly the same request it always has (no
+  // conversationId/history), so a typed-only session is byte-for-byte
+  // unaffected by any of this. See lib/voiceConversation.ts.
+  const hasVoiceContextRef = useRef(false);
   const { speak, stop: stopSpeaking, isSpeaking, energyRef } = useEsmereldaSpeech();
 
   useEffect(() => {
@@ -29,7 +57,36 @@ export default function Chat() {
   }, [messages, pending]);
 
   useEffect(() => {
-    const initial = (location.state as { initialMessage?: string } | null)?.initialMessage;
+    const state = location.state as { initialMessage?: string; voiceHandoff?: VoiceHandoff } | null;
+
+    if (state?.voiceHandoff && !consumedVoiceHandoff.current) {
+      consumedVoiceHandoff.current = true;
+      hasVoiceContextRef.current = true;
+      const { userMessage, reply, assignments, courses, documents, sources, followUps } = state.voiceHandoff;
+      const now = new Date().toISOString();
+      // Rendered directly — never re-sent to sendChatMessage(). This is
+      // the exact answer Esmerelda already decided on (and the user
+      // already asked, by voice) a moment ago; re-asking would risk a
+      // different answer and waste a real reasoning-layer call.
+      setMessages((prev) => [
+        ...prev,
+        { id: newId(), role: "user", content: userMessage, createdAt: now },
+        {
+          id: newId(),
+          role: "assistant",
+          content: reply,
+          createdAt: now,
+          assignments,
+          courses,
+          documents,
+          sources,
+          followUps,
+        },
+      ]);
+      return;
+    }
+
+    const initial = state?.initialMessage;
     if (initial && !consumedInitial.current) {
       consumedInitial.current = true;
       submitMessage(initial);
@@ -52,7 +109,12 @@ export default function Chat() {
     setPending(true);
 
     try {
-      const res = await sendChatMessage(trimmed);
+      // Only ever populated once this session has actually involved voice
+      // (a handoff arrived, or the user kept typing after one) — a purely
+      // typed session sends exactly what it always has.
+      const res = hasVoiceContextRef.current
+        ? await sendChatMessage(trimmed, getVoiceConversation())
+        : await sendChatMessage(trimmed);
       setReachable(true);
       setMessages((prev) => [
         ...prev,
@@ -68,6 +130,9 @@ export default function Chat() {
           documents: res.documents,
         },
       ]);
+      if (hasVoiceContextRef.current) {
+        appendVoiceTurn(trimmed, res.reply, HISTORY_MAX_MESSAGES);
+      }
       // Speaks only the final reply text — never the user's message, the
       // "Thinking…" state above, or the error branch below. speak() stops
       // any still-playing previous response first and never throws, so a
@@ -94,6 +159,11 @@ export default function Chat() {
     stopSpeaking();
     setMessages([]);
     setInput("");
+    // A genuinely new conversation also severs any inherited voice
+    // context — otherwise "New conversation" here would still quietly
+    // carry the old Orb exchange into whatever's typed next.
+    hasVoiceContextRef.current = false;
+    resetVoiceConversation();
   }
 
   return (

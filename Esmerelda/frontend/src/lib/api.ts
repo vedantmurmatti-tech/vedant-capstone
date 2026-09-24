@@ -16,6 +16,7 @@
 import type {
   Assignment,
   ChatApiResponse,
+  ChatHistoryTurn,
   Course,
   DashboardSummary,
   DocumentFile,
@@ -193,12 +194,28 @@ export class ChatUnavailableError extends Error {
  * generative model). Throws `ChatUnavailableError` only when the backend
  * itself can't be reached or errors, so the UI can show an honest
  * "unavailable" state rather than ever fabricating a reply.
+ *
+ * `options.history`/`options.conversationId` are both optional — every
+ * existing call site (Chat.tsx) omits them and sends exactly the same
+ * request body it always has (`history` defaults to `[]` server-side,
+ * which is byte-for-byte what an omitted history field already meant).
+ * They exist so a caller maintaining its own multi-turn context (the Orb's
+ * voice loop — see Dashboard.tsx) can pass prior turns of the SAME
+ * conversation through the one existing reasoning pipeline, without a
+ * second implementation of it.
  */
-export async function sendChatMessage(message: string): Promise<ChatApiResponse> {
+export async function sendChatMessage(
+  message: string,
+  options?: { conversationId?: string; history?: ChatHistoryTurn[] }
+): Promise<ChatApiResponse> {
   try {
     return await apiFetch<ChatApiResponse>("/chat", {
       method: "POST",
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({
+        message,
+        conversationId: options?.conversationId,
+        history: options?.history ?? [],
+      }),
     });
   } catch (err) {
     if (err instanceof ApiError) {
