@@ -7,12 +7,23 @@
 # moodle/sync_service.py (POST /api/sync/moodle) needs it. An earlier
 # version of this Dockerfile excluded Playwright entirely, when nothing
 # deployed needed it yet — see BUILD_LOG.md for that decision and this
-# one reversing it. The rest of Moodle/Playwright automation
-# (moodle/browser.py, content_radar.py, course_radar.py,
-# submission_radar.py, voice.py, browser_profile/) remains out of scope
-# for this container — those are local-only, interactive, manually-run
-# tools, not part of the deployed API, and are excluded by
-# .dockerignore exactly as before.
+# one reversing it.
+#
+# moodle/browser.py IS included (via `COPY moodle/ moodle/` below,
+# no longer excluded by .dockerignore) — moodle/sync_service.py's
+# run_sync() and api/routes.py's Moodle-connect/session-status endpoints
+# import check_moodle_session()/connect_user_interactively() from it at
+# runtime (see BUILD_LOG.md's multi-user foundation and deployment-fix
+# entries); excluding it previously produced a real
+# `ModuleNotFoundError: No module named 'moodle.browser'` on Render the
+# first time a multi-user sync or connect request actually reached that
+# import. content_radar.py, course_radar.py, submission_radar.py, and
+# voice.py remain out of scope for this container (local-only, manually-
+# run, interactive prototypes never imported by the deployed API) and
+# stay excluded by .dockerignore, as does moodle/browser_profile/ (real
+# session cookies — never baked into an image; see get_user_browser_
+# profile_dir()/ESMERELDA_DATA_DIR for where a real per-user profile
+# actually lives on a deployed instance).
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -33,13 +44,20 @@ RUN pip install --no-cache-dir -r requirements.txt
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN playwright install --with-deps chromium
 
-# api/ and storage/ contain the deployed app; moodle/ contains the
-# sync service (moodle/sync_service.py) that POST /api/sync/moodle
-# (api/routes.py) imports at request time — moodle/__init__.py and
-# sync_service.py are the only files under moodle/ actually needed at
-# runtime, but the whole directory is copied for simplicity; the
-# interactive-only scripts inside it (browser.py, document_downloader.py)
-# are simply never imported by the deployed app and sit unused. main.py
+# api/ and storage/ contain the deployed app; moodle/ contains the sync
+# service (moodle/sync_service.py, imported at request time by POST
+# /api/sync/moodle) and its two real runtime dependencies,
+# document_downloader.py (called from run_sync()) and browser.py
+# (check_moodle_session()/connect_user_interactively(), called from
+# run_sync() and from api/routes.py's Moodle-connect/session-status
+# endpoints — see BUILD_LOG.md). There is no moodle/__init__.py file at
+# all (confirmed directly, not assumed) — moodle/ works as a Python 3
+# implicit namespace package, which needs no __init__.py to be
+# importable; the whole moodle/ directory is copied for simplicity
+# rather than naming each of these files individually. Only
+# .dockerignore's exclusions (browser_profile/, the standalone
+# content_radar.py/course_radar.py/submission_radar.py/voice.py
+# prototypes) are left out. main.py
 # is the FastAPI entrypoint (moved out of venv/ in an earlier change so
 # it's a real, trackable source file instead of living inside a
 # gitignored virtualenv). See .dockerignore for what's excluded (the

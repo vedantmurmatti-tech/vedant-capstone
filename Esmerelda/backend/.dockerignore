@@ -8,11 +8,24 @@ tests/
 # deployed API. moodle/sync_service.py (used by POST /api/sync/moodle) and
 # moodle/document_downloader.py (its sync_resource_documents() is called
 # from sync_service.py's run_sync() — see BUILD_LOG.md) are NOT excluded.
-# moodle/browser.py is still excluded — it's the manual, interactive-login
-# script's own helper, never imported at module level by
-# document_downloader.py (only lazily inside its main(), the manual
-# script's own entry point) specifically so its absence here is safe.
-moodle/browser.py
+#
+# moodle/browser.py is NOT excluded either, as of the multi-user
+# foundation work (see BUILD_LOG.md) — this used to be true ("never
+# imported at module level ... specifically so its absence here is
+# safe") but is no longer: moodle/sync_service.py's run_sync() now does
+# `from moodle.browser import check_moodle_session` (a real, reachable
+# runtime import whenever a sync is triggered with a user_id — i.e.
+# every multi-user sync), and api/routes.py's POST /api/moodle/connect
+# and GET /api/moodle/session-status import check_moodle_session /
+# connect_user_interactively from it too. Excluding it here previously
+# built a container image that raised `ModuleNotFoundError: No module
+# named 'moodle.browser'` the first time any of those code paths
+# actually ran on Render — confirmed as the real, reproduced root cause
+# (see BUILD_LOG.md's deployment-fix entry), not a hypothetical. Its own
+# interactive-only entry points (main(), get_authenticated_page(), both
+# gated behind a blocking input() prompt) are simply never called by the
+# deployed API and sit unused — importing the module at all does not
+# execute them.
 moodle/browser_profile/
 moodle/__pycache__/
 content_radar.py
