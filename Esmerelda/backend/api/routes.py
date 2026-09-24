@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from . import queries
 from .chat_agent import handle_chat_message
 from .deps import get_db
+from .notifications import build_proactive_notifications, compute_new_items_count
 from .schemas import (
     AssignmentOut,
     ChatRequestIn,
@@ -201,18 +202,22 @@ def get_moodle_login_diagnostics():
 
 @router.get("/dashboard/summary", response_model=DashboardSummaryOut)
 def get_dashboard_summary(db: Session = Depends(get_db)):
-    courses_count, assignments_count, documents_count = queries.fetch_dashboard_counts(db)
+    courses_count, assignments_count, resources_count, documents_count = queries.fetch_dashboard_counts(db)
     return DashboardSummaryOut(
         coursesCount=courses_count,
         assignmentsCount=assignments_count,
+        resourcesCount=resources_count,
         documentsCount=documents_count,
         sync=queries.fetch_sync_status(db),
+        newItemsCount=compute_new_items_count(),
+        notifications=build_proactive_notifications(db),
     )
 
 
 @router.post("/chat", response_model=ChatResponseOut)
 async def chat(payload: ChatRequestIn, db: Session = Depends(get_db)):
-    return await handle_chat_message(db, payload.message)
+    history = [{"role": turn.role, "content": turn.content} for turn in payload.history]
+    return await handle_chat_message(db, payload.message, history=history, conversation_id=payload.conversationId)
 
 
 @router.post("/speech")

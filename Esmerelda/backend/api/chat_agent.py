@@ -32,12 +32,28 @@ from .schemas import ChatResponseOut
 logger = logging.getLogger("esmerelda.chat")
 
 
-async def handle_chat_message(db: Session, message: str) -> ChatResponseOut:
-    logger.info("[CHAT] query received: %r", message[:200])
+async def handle_chat_message(
+    db: Session,
+    message: str,
+    history: list[dict[str, str]] | None = None,
+    conversation_id: str | None = None,
+) -> ChatResponseOut:
+    """`history` is prior `{"role": "user"|"assistant", "content": ...}`
+    turns of the SAME logical conversation (e.g. one continuous voice
+    session on the Orb, or — unused today — a typed Chat.tsx thread),
+    oldest first. This is the one existing reasoning pipeline, unchanged
+    in shape — `history` is just prepended ahead of `message` in the same
+    `messages` list Groq/Gemini already built from a single message.
+    `conversation_id` is never used to look anything up (no server-side
+    session state exists) — it's here only for log correlation."""
+    logger.info(
+        "[CHAT] query received: %r (conversation=%s, history_turns=%d)",
+        message[:200], conversation_id, len(history or []),
+    )
     logger.info("[CHAT] documents indexed=%d", document_retrieval.count_indexed_documents(db))
 
     try:
-        return await handle_chat_message_groq(db, message)
+        return await handle_chat_message_groq(db, message, history=history)
     except GroqUnavailableError as exc:
         # Python deletes `as`-bound exception variables at the end of their
         # except block, so the message is copied into a plain str here to
@@ -45,13 +61,17 @@ async def handle_chat_message(db: Session, message: str) -> ChatResponseOut:
         groq_reason = str(exc)
 
     try:
-        response = await handle_chat_message_gemini(db, message)
+        response = await handle_chat_message_gemini(db, message, history=history)
         response.reply = (
             f"_(Groq was unavailable — {groq_reason} — answered by Gemini instead.)_\n\n" + response.reply
         )
         return response
     except GeminiUnavailableError as exc:
         gemini_reason = str(exc)
+        # The deterministic fallback is rule-based keyword matching over
+        # the single latest message, not an LLM — it never used history
+        # before this change and still doesn't; there is no "context" for
+        # it to lose.
         fallback = deterministic_agent.handle_chat_message_deterministic(db, message)
         fallback.reply = (
             f"_(Both Groq and Gemini were unavailable — Groq: {groq_reason}; Gemini: {gemini_reason} — "

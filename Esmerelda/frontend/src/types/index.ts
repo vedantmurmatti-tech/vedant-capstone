@@ -76,11 +76,29 @@ export interface SyncTriggerResponse {
   state: MoodleSyncState;
 }
 
+// One concise, real, non-fabricated academic notice (backend/api/notifications.py
+// ProactiveNotificationOut) — always derived from actual stored Moodle
+// data. `kind` is a small closed set to style by, not free-form text.
+export type ProactiveNotificationKind = "due_soon" | "new_content" | "sync_error";
+
+export interface ProactiveNotification {
+  id: string;
+  kind: ProactiveNotificationKind;
+  message: string;
+  courseId: number | null;
+  assignmentId: number | null;
+}
+
 export interface DashboardSummary {
   coursesCount: number;
   assignmentsCount: number;
+  resourcesCount: number;
   documentsCount: number;
   sync: MoodleSyncStatus;
+  // null when there's no earlier successful sync to compare against yet
+  // (genuinely unknown, never reported as 0).
+  newItemsCount: number | null;
+  notifications: ProactiveNotification[];
 }
 
 export type ChatRole = "user" | "assistant";
@@ -111,6 +129,30 @@ export interface Conversation {
   updatedAt: string;
 }
 
+// One prior turn of the same logical conversation, sent back to POST
+// /api/chat (backend/api/schemas.py ChatHistoryTurnIn) so the reasoning
+// pipeline can resolve follow-ups like "which one" / "that". Optional —
+// omitting it (as every call before this existed did) behaves exactly as
+// before.
+export interface ChatHistoryTurn {
+  role: ChatRole;
+  content: string;
+}
+
+// Set server-side (backend/api/response_mode.py) from the reasoning
+// layer's own trailing marker in its reply — always exactly one of these
+// two values, never taken from the model unvalidated. "voice" is always
+// the safe default.
+export type ResponseMode = "voice" | "visual";
+
+// Only ever a small, fixed set of booleans (see backend's
+// build_visual_context()) — never arbitrary model output or a route.
+export interface VisualContext {
+  hasAssignments: boolean;
+  hasCourses: boolean;
+  hasDocuments: boolean;
+}
+
 // POST /api/chat response shape (backend/api/schemas.py ChatResponseOut).
 export interface ChatApiResponse {
   reply: string;
@@ -119,4 +161,6 @@ export interface ChatApiResponse {
   documents: DocumentFile[];
   sources: ChatSource[];
   followUps: string[];
+  responseMode: ResponseMode;
+  visualContext: VisualContext | null;
 }

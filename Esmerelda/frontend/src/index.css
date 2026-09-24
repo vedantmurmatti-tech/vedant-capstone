@@ -46,6 +46,7 @@
   --animate-core-breathe: core-breathe 4.5s ease-in-out infinite;
   --animate-shimmer: shimmer 1.8s ease-in-out infinite;
   --animate-caret-blink: caret-blink 1s step-end infinite;
+  --animate-thinking-pulse: thinking-pulse 2.6s ease-in-out infinite;
 
   @keyframes fade-in {
     from { opacity: 0; }
@@ -78,6 +79,10 @@
   @keyframes caret-blink {
     0%, 45% { opacity: 1; }
     50%, 100% { opacity: 0; }
+  }
+  @keyframes thinking-pulse {
+    0%, 100% { opacity: 0.2; }
+    50% { opacity: 0.65; }
   }
 }
 

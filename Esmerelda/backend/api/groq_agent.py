@@ -48,6 +48,7 @@ logger = logging.getLogger("esmerelda.chat")
 from .gemini_tools import ToolCollector, build_tools
 from .groq_tools import ToolDispatch, build_dispatch, mcp_tool_defs, python_tool_defs
 from .mcp_bridge import McpCallLog, sqlite_mcp_session
+from .response_mode import RESPONSE_MODE_SYSTEM_PROMPT_ADDITION, build_visual_context, extract_response_mode
 from .schemas import ChatResponseOut, McpCallOut
 
 BACKEND_DIR = Path(__file__).resolve().parent.parent
@@ -90,7 +91,7 @@ Rules you must never break:
 5. Keep answers concise and factual.
 6. If the question is unrelated to courses/assignments/documents, you may answer briefly
    without a tool call, but stay focused — you are an academic assistant, not a
-   general-purpose chatbot."""
+   general-purpose chatbot.""" + RESPONSE_MODE_SYSTEM_PROMPT_ADDITION
 
 
 class GroqUnavailableError(Exception):
@@ -185,7 +186,16 @@ async def run_tool_loop(
     return "I wasn't able to finish that within a safe number of steps — try rephrasing your question."
 
 
-async def handle_chat_message_groq(db: Session, message: str) -> ChatResponseOut:
+# Defensive cap independent of whatever a client already trimmed to (see
+# schemas.py's own max_length on ChatRequestIn.history) — belt and braces
+# against unbounded context growth, and cheap insurance against a future
+# caller that doesn't trim client-side at all. ~6 user/assistant exchanges.
+_MAX_HISTORY_MESSAGES = 12
+
+
+async def handle_chat_message_groq(
+    db: Session, message: str, history: list[dict[str, str]] | None = None
+) -> ChatResponseOut:
     try:
         client = _get_client()
         model = _get_model()
@@ -218,10 +228,14 @@ async def handle_chat_message_groq(db: Session, message: str) -> ChatResponseOut
         except Exception as exc:
             raise GroqUnavailableError(f"{type(exc).__name__}: {exc}") from exc
 
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": message},
-    ]
+    messages: list[dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    if history:
+        # Prior turns of the SAME conversation — e.g. consecutive voice
+        # exchanges on the Orb (see chat_agent.py) — prepended exactly
+        # like any other {"role", "content"} message Groq already expects.
+        # Only ever real prior user/assistant text, never fabricated.
+        messages.extend(history[-_MAX_HISTORY_MESSAGES:])
+    messages.append({"role": "user", "content": message})
 
     try:
         async with sqlite_mcp_session(call_log) as session:
@@ -246,6 +260,9 @@ async def handle_chat_message_groq(db: Session, message: str) -> ChatResponseOut
     courses = list(collector.courses.values())
     documents = list(collector.documents.values())
 
+    reply_text, response_mode = extract_response_mode(reply_text)
+    visual_context = build_visual_context(assignments, courses, documents) if response_mode == "visual" else None
+
     return ChatResponseOut(
         reply=reply_text,
         assignments=assignments,
@@ -264,4 +281,6 @@ async def handle_chat_message_groq(db: Session, message: str) -> ChatResponseOut
             McpCallOut(server=c.server, tool=c.tool, arguments=c.arguments, isError=c.is_error)
             for c in call_log.calls
         ],
+        responseMode=response_mode,
+        visualContext=visual_context,
     )
