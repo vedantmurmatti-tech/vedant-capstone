@@ -2255,4 +2255,51 @@ For the deep scraper call stack (`_sync_course_resources`, `_scan_page_for_resou
 
 ---
 
+## 2026-09-25 (Render deployment fix: `ModuleNotFoundError: No module named 'moodle.browser'`)
+
+### Root cause — confirmed directly, not guessed
+
+`moodle/browser.py` **is** correctly Git-tracked (`git ls-files` confirms it, and its content on disk matches what's committed at `HEAD`) — this was never a tracking/rename/gitignore-on-the-source problem. The actual cause is `backend/.dockerignore`, which explicitly excluded it from the **Docker build context**:
+
+```
+moodle/browser.py
+```
+
+with a comment justifying the exclusion: it was "the manual, interactive-login script's own helper, never imported at module level ... specifically so its absence here is safe." That was true when it was written, but the previous multi-user-foundation batch made it false without anyone updating this file: `moodle/sync_service.py`'s `run_sync()` now does `from moodle.browser import check_moodle_session` at **line 1699**, and `api/routes.py`'s `POST /api/moodle/connect`/`GET /api/moodle/session-status` import `connect_user_interactively`/`check_moodle_session` from it too — all three are real, reachable runtime imports on the deployed API now (any multi-user sync, or either of those two endpoints), not something confined to a local-only script anymore. A container built from this Dockerfile/`.dockerignore` genuinely does not have `moodle/browser.py` on disk at `/app/moodle/browser.py`, so the first request that reached that import raised exactly the reported `ModuleNotFoundError: No module named 'moodle.browser'`.
+
+**Reproduced directly**, not inferred: built a real local copy of exactly what the Docker build context would contain under the OLD `.dockerignore` (every file `COPY`'d by the Dockerfile, minus every `.dockerignore` exclusion, using the project's real venv for dependencies) and ran the same import — it failed with the identical `ModuleNotFoundError: No module named 'moodle.browser'`. Built the same simulated context under the FIXED `.dockerignore` and the same import succeeded.
+
+Confirmed `moodle/__init__.py` does not exist at all (neither tracked nor on disk) — a stale Dockerfile comment claimed it did; `moodle/` has always worked as a Python 3 implicit namespace package (needs no `__init__.py`), confirmed by the same import test succeeding without one, so this was a documentation inaccuracy, not a real gap.
+
+### Fix — the smallest correct change, nothing invented
+
+Removed exactly the one `.dockerignore` line (`moodle/browser.py`) that excluded a file the deployed app now genuinely needs — no stub module, no duplicated logic, no change to `sync_service.py`'s or `routes.py`'s working import statements. `moodle/browser_profile/` (real session cookies — must never be baked into an image) stays excluded, as does every other already-excluded local-only script. Updated the stale explanatory comments in both `.dockerignore` and `Dockerfile` that asserted the old (now-false) "never imported" premise and the nonexistent `moodle/__init__.py`, so the next person reading either file gets the real current reason, not the reasoning this bug already disproved.
+
+**Files changed**: `Esmerelda/backend/.dockerignore`, `Esmerelda/backend/Dockerfile`. Nothing else — `moodle/sync_service.py`, `moodle/browser.py`, and `api/routes.py`'s working import statements were not touched; this was purely a build-context inclusion problem, not a code problem.
+
+### Hosted Render sync compatibility — reported honestly, not claimed working
+
+Fixing the import lets `check_moodle_session()` and `connect_user_interactively()` **load** on Render; it does not by itself make the interactive per-user Google-SSO connect flow (Part 7 of the multi-user batch) actually usable there. `connect_user_interactively()` launches Chromium with `headless=False` — on a real Render container (headless Linux, no X server, and the Dockerfile's `playwright install --with-deps chromium` installs Chromium's runtime library dependencies but not a virtual display server like `xvfb`), this would very likely fail to launch at all. **This specific failure was not literally reproduced in this environment** — the only machine available here has a real display, so `chromium.launch(headless=False)` succeeds locally and doesn't prove what happens on Render's actual headless container. Stated as an inferred, undemonstrated risk, not a confirmed fact, consistent with this project's existing practice of not claiming something works without having actually run it.
+
+Practical consequence: `POST /api/moodle/connect` is very likely not usable on a hosted Render deployment as written (this was already documented as a known limitation in the multi-user-foundation entry above, under a different angle — "opens a window on the backend's own machine, not the end user's own device" — this entry adds that it may not even be able to open a window there at all). The **existing legacy credential-based fallback** (`MOODLE_USERNAME`/`MOODLE_PASSWORD`, `_run_sync_with_credentials()`, headless throughout, already used and already tested end-to-end against a real fake Moodle server — see `tests/test_sync_service.py`, 56/56 passing) remains fully intact and unmodified, and is still what the demo user's sync falls back to. Real hosted SSO would need a genuinely different mechanism (a server-side relay, or Moodle Web Service tokens pending FLAME admin confirmation — see this session's earlier investigation entries); this fix does not claim to provide that, and nothing here should be read as though it does.
+
+### Tests
+
+- `python -c "from moodle.browser import check_moodle_session"` — succeeds (both against the real dev tree and the simulated fixed build context).
+- `python -c "import moodle.sync_service"` — succeeds.
+- `python -c "from moodle.browser import connect_user_interactively"` — succeeds.
+- `tests/test_sync_service.py` — 56/56 passed (the real end-to-end Playwright-against-a-fake-local-Moodle-server suite; unaffected, since it always ran against the real source tree, never the Docker build context — this confirms the fix didn't disturb the actual sync logic, which was never the problem).
+- `tests/test_deployment_readiness.py` — 9/9 passed (health-check/startup-log behavior, unrelated to this fix but re-run to confirm no collateral regression).
+- Simulated Docker build-context repro: old `.dockerignore` → reproduces the exact reported `ModuleNotFoundError`; fixed `.dockerignore` → imports cleanly. (Docker itself is not available in this environment, so the image was not literally built and run — this simulation copies precisely what the Dockerfile's `COPY` instructions plus the active `.dockerignore` exclusions would produce, which is what determines this specific bug's presence or absence.)
+
+### Git/deployment steps for this fix
+
+1. Confirmed `git ls-files` already includes every real source file this fix touches or depends on: `moodle/browser.py`, `moodle/sync_service.py`, `moodle/document_downloader.py`, `api/auth.py`, `storage/timezones.py`, `.dockerignore`, `Dockerfile` — all tracked, nothing needs to be newly `git add`ed for the source code itself.
+2. Confirmed `Esmerelda/backend/.env` and `Esmerelda/backend/storage/esmerelda.db` remain correctly untracked (not added by this fix, and not present in `git ls-files`).
+3. **Pre-existing, separate condition, not touched by this fix**: `moodle/browser_profile/` (692 files — real Chromium profile data, including a real `Network/Cookies` file) is still tracked in Git **history** from before `.gitignore`'s `Esmerelda/backend/moodle/browser_profile/` rule existed (that rule only prevents *new* changes to already-tracked files from being silently missed, not history rewriting) — a prior BUILD_LOG entry already documents this as a known, deliberately-not-rewritten-history decision. This fix does not add to it, and per the explicit instruction not to add browser profiles/databases/documents, nothing new was staged here.
+4. To actually deploy this fix: commit `Esmerelda/backend/.dockerignore` and `Esmerelda/backend/Dockerfile`, push to the branch Render deploys from, and trigger a Render redeploy (or let auto-deploy pick up the push) — no Render dashboard configuration change is needed, this is a source-only fix.
+5. After redeploying, confirm on the real instance: `POST /api/sync/moodle` with a real `X-Esmerelda-User-Id` header for a non-demo user should no longer 500 with `ModuleNotFoundError` — it should instead reach the real, expected `MoodleSessionExpiredError` ("No valid Moodle session for user N — reconnect Moodle before syncing") for a user who hasn't connected yet, which is the correct, already-tested behavior this batch's own multi-user testing confirmed locally.
+
+---
+
 <!-- Add the next entry above this line, newest at the top or bottom — just be consistent -->
