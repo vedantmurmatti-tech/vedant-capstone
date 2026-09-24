@@ -20,6 +20,8 @@ from typing import Callable
 
 from sqlalchemy.orm import Session
 
+from storage.timezones import to_ist_isoformat
+
 from . import document_retrieval, queries
 from .matching import match_assignment, match_course
 from .schemas import AssignmentOut, ChatSourceOut, CourseOut, DocumentOut
@@ -38,10 +40,14 @@ class ToolCollector:
     sources: list[ChatSourceOut] = field(default_factory=list)
 
 
-def build_tools(db: Session, collector: ToolCollector) -> list[Callable]:
+def build_tools(db: Session, collector: ToolCollector, user_id: int) -> list[Callable]:
+    """user_id (multi-user foundation — see BUILD_LOG.md) scopes every
+    query these closures make, so a tool call in one user's chat turn can
+    never read or plan around another user's courses/assignments/
+    resources/documents."""
     def get_upcoming_assignments() -> dict:
         """Look up the student's real tracked assignments across every course, ranked by real urgency (overdue, due soon, or upcoming). Use this for any question about deadlines, what's due, or priorities. Takes no arguments."""
-        rows = queries.fetch_all_assignments(db)
+        rows = queries.fetch_all_assignments(db, user_id)
         if not rows:
             return {"assignments": [], "note": "No assignments are currently tracked in the database."}
 
@@ -58,16 +64,23 @@ def build_tools(db: Session, collector: ToolCollector) -> list[Callable]:
                 {
                     "name": action.assignment.name,
                     "course": course.name,
-                    "due_date": action.assignment.due_date.isoformat() if action.assignment.due_date else None,
+                    "moodle_course_id": course.moodle_id,
+                    "moodle_assignment_id": action.assignment.moodle_id,
+                    "description": action.assignment.description,
+                    # Timezone-aware IST string (e.g. "2026-09-26T23:59:00+05:30") —
+                    # never a naive string the model could misread as UTC or local time.
+                    "due_date": to_ist_isoformat(action.assignment.due_date),
                     "urgency": action.urgency,
+                    "date_urgency": action.date_urgency,
                     "recommendation": action.recommendation,
+                    "submission_status": action.assignment.submission_status,
                 }
             )
         return {"assignments": results}
 
     def get_course_info(course_query: str) -> dict:
         """Look up real information about one specific course by name or course code (e.g. "Tangible Interfaces" or "DESG322"). Returns the course's full name, short code, description, and how many assignments/resources are tracked for it — COUNTS only, not the assignments themselves. Use get_course_assignments instead when the user wants the actual list of assignments/due dates for a course. Args: course_query: the course name or code as mentioned by the user."""
-        courses = queries.fetch_courses(db)
+        courses = queries.fetch_courses(db, user_id)
         course = match_course(course_query, courses)
         if course is None:
             return {
@@ -77,8 +90,8 @@ def build_tools(db: Session, collector: ToolCollector) -> list[Callable]:
 
         out = queries.course_out(course)
         collector.courses[out.id] = out
-        assignments = queries.fetch_course_assignments(db, course.id)
-        resources = queries.fetch_course_resources(db, course.id)
+        assignments = queries.fetch_course_assignments(db, course.id, user_id)
+        resources = queries.fetch_course_resources(db, course.id, user_id)
         collector.sources.append(ChatSourceOut(label="Course Catalog", courseName=course.name))
 
         return {
@@ -91,7 +104,7 @@ def build_tools(db: Session, collector: ToolCollector) -> list[Callable]:
 
     def get_course_assignments(course_query: str) -> dict:
         """Look up the REAL tracked assignments for ONE specific course — with their real due dates, urgency, and submission status. Use this — not get_course_info, which only returns a count — whenever the user asks what's due, or what assignments exist, for a named or specific course (e.g. "what are my assignments for DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Learning" or "what's due in Tangible Interfaces"). The course is resolved deterministically from the real database (by Moodle course id, short name, course code, or full name — tolerant of a truncated or partial course name) — never guess a course's assignments from get_upcoming_assignments' cross-course list, which only shows the 8 most urgent overall and may omit a specific course entirely. Args: course_query: the course name, short code, or Moodle course id, exactly as the user mentioned it."""
-        courses = queries.fetch_courses(db)
+        courses = queries.fetch_courses(db, user_id)
         course = match_course(course_query, courses)
         if course is None:
             return {
@@ -100,7 +113,7 @@ def build_tools(db: Session, collector: ToolCollector) -> list[Callable]:
             }
 
         collector.courses[course.id] = queries.course_out(course)
-        assignments = queries.fetch_course_assignments(db, course.id)
+        assignments = queries.fetch_course_assignments(db, course.id, user_id)
         if not assignments:
             return {
                 "course": course.name,
@@ -118,8 +131,12 @@ def build_tools(db: Session, collector: ToolCollector) -> list[Callable]:
             results.append(
                 {
                     "name": action.assignment.name,
-                    "due_date": action.assignment.due_date.isoformat() if action.assignment.due_date else None,
+                    "moodle_course_id": course.moodle_id,
+                    "moodle_assignment_id": action.assignment.moodle_id,
+                    "description": action.assignment.description,
+                    "due_date": to_ist_isoformat(action.assignment.due_date),
                     "urgency": action.urgency,
+                    "date_urgency": action.date_urgency,
                     "recommendation": action.recommendation,
                     "submission_status": action.assignment.submission_status,
                 }
@@ -128,7 +145,7 @@ def build_tools(db: Session, collector: ToolCollector) -> list[Callable]:
 
     def get_course_documents(course_query: str) -> dict:
         """Look up real indexed documents (files downloaded from Moodle) for a specific course, or pass an empty string to get the most recently indexed documents across all courses. Args: course_query: the course name or code, or "" for all courses."""
-        courses = queries.fetch_courses(db)
+        courses = queries.fetch_courses(db, user_id)
         matched = match_course(course_query, courses) if course_query.strip() else None
 
         if course_query.strip() and matched is None:
@@ -137,7 +154,7 @@ def build_tools(db: Session, collector: ToolCollector) -> list[Callable]:
                 "available_courses": [c.name for c in courses],
             }
 
-        rows = queries.fetch_all_documents(db)
+        rows = queries.fetch_all_documents(db, user_id)
         if matched:
             rows = [row for row in rows if row[2] and row[2].id == matched.id]
         rows = rows[:MAX_RESULTS]
@@ -165,13 +182,13 @@ def build_tools(db: Session, collector: ToolCollector) -> list[Callable]:
 
     def search_document_content(query: str) -> dict:
         """Search the ACTUAL text content of real, downloaded Moodle documents (PDFs, DOCX, PPTX) for a specific question or topic — e.g. "what does the Service Design project brief say about requirements" or "summarize the TRENDS Matrix document". Use this whenever the user asks what a document says, requires, or covers — get_course_documents only returns document names/metadata, never their content. Returns the actual matching excerpts, quoted from the real files, with which document/course each came from. Args: query: the question or topic to search for, in the user's own words."""
-        chunks = document_retrieval.search_documents(db, query)
+        chunks = document_retrieval.search_documents(db, query, user_id)
         retrieved_names = [c.document_name for c in chunks]
         logger.info("[CHAT] retrieved documents=%s", retrieved_names)
         logger.info("[CHAT] retrieved chunks=%d", len(chunks))
 
         if not chunks:
-            indexed_count = document_retrieval.count_indexed_documents(db)
+            indexed_count = document_retrieval.count_indexed_documents(db, user_id)
             return {
                 "excerpts": [],
                 "note": (
@@ -198,7 +215,7 @@ def build_tools(db: Session, collector: ToolCollector) -> list[Callable]:
 
     def plan_assignment_action(assignment_query: str) -> dict:
         """Run the assignment-action-planner Skill on ONE specific real assignment named or described by the user (e.g. "the MVP assignment" or "Assessment 2"). Use this — not get_upcoming_assignments — when the user asks what to do about a single named assignment. Breaks the assignment into its explicit requirements and returns a status (completed/incomplete/unverified), a concrete next action, an expected deliverable, how to verify it, and real evidence for each one — plus the real submission link/Moodle IDs and anything Esmerelda couldn't determine. Args: assignment_query: the assignment name or a distinctive phrase from it, as the user mentioned it."""
-        rows = queries.fetch_all_assignments(db)
+        rows = queries.fetch_all_assignments(db, user_id)
         assignments = [a for a, _c in rows]
         course_by_id = {a.id: c for a, c in rows}
 
@@ -210,9 +227,9 @@ def build_tools(db: Session, collector: ToolCollector) -> list[Callable]:
             }
 
         course = course_by_id[matched.id]
-        matched_resource = queries.fetch_resource_by_moodle_id(db, matched.moodle_id)
+        matched_resource = queries.fetch_resource_by_moodle_id(db, matched.moodle_id, user_id)
         related_documents = (
-            queries.fetch_documents_for_resource(db, matched_resource.id) if matched_resource else []
+            queries.fetch_documents_for_resource(db, matched_resource.id, user_id) if matched_resource else []
         )
         plan = plan_for_assignment(
             matched, course, matched_resource=matched_resource, related_documents=related_documents
@@ -228,6 +245,7 @@ def build_tools(db: Session, collector: ToolCollector) -> list[Callable]:
             "course_name": plan.course_name,
             "due_date": plan.due_date,
             "urgency": plan.urgency,
+            "date_urgency": plan.date_urgency,
             "requirement_source": plan.requirement_source,
             "requirements": [
                 {

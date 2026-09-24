@@ -151,7 +151,7 @@ with SessionLocal() as session:
     session.commit()
 
 with SessionLocal() as session:
-    status = fetch_sync_status(session)
+    status = fetch_sync_status(session, None)
     print(f"STATE:{status.state}")
     print(f"HAS_ERROR:{bool(status.lastError)}")
 """

@@ -100,11 +100,11 @@ def _act_help(ctx: AgentContext) -> None:
     ctx.follow_ups.extend(["What's due this week?", "When did you last sync with Moodle?"])
 
 
-def _act_course_lookup(db: Session, course: Course, perception: Perception, ctx: AgentContext) -> None:
+def _act_course_lookup(db: Session, course: Course, perception: Perception, ctx: AgentContext, user_id: int) -> None:
     ctx.courses[course.id] = queries.course_out(course)
 
-    assignments = queries.fetch_course_assignments(db, course.id)
-    resources = queries.fetch_course_resources(db, course.id)
+    assignments = queries.fetch_course_assignments(db, course.id, user_id)
+    resources = queries.fetch_course_resources(db, course.id, user_id)
 
     short = course.short_name or queries.course_out(course).shortName or course.name
     parts = [f"**{course.name}** ({short}) — {len(assignments)} assignment(s), {len(resources)} resource(s) tracked."]
@@ -122,7 +122,7 @@ def _act_course_lookup(db: Session, course: Course, perception: Perception, ctx:
     # matched both a course and the documents intent, so fold both in here
     # rather than reasoning them as two disconnected steps.
     if "documents" in perception.intents:
-        course_docs = [row for row in queries.fetch_all_documents(db) if row[2] and row[2].id == course.id][:5]
+        course_docs = [row for row in queries.fetch_all_documents(db, user_id) if row[2] and row[2].id == course.id][:5]
         if course_docs:
             doc_lines = [f"- **{doc.name}**" for doc, _r, _c, _u in course_docs]
             parts.append("Documents indexed for this course:\n" + "\n".join(doc_lines))
@@ -135,8 +135,8 @@ def _act_course_lookup(db: Session, course: Course, perception: Perception, ctx:
     ctx.reply_parts.append("\n\n".join(parts))
 
 
-def _act_deadlines(db: Session, ctx: AgentContext) -> None:
-    rows = queries.fetch_all_assignments(db)
+def _act_deadlines(db: Session, ctx: AgentContext, user_id: int) -> None:
+    rows = queries.fetch_all_assignments(db, user_id)
     course_by_assignment = {a.id: c for a, c in rows}
     actions = plan_actions([a for a, _c in rows])
 
@@ -148,8 +148,8 @@ def _act_deadlines(db: Session, ctx: AgentContext) -> None:
         ctx.sources.append(ChatSourceOut(label="Assignment Timeline", courseName="All courses"))
 
 
-def _act_documents(db: Session, ctx: AgentContext) -> None:
-    rows = queries.fetch_all_documents(db)[:5]
+def _act_documents(db: Session, ctx: AgentContext, user_id: int) -> None:
+    rows = queries.fetch_all_documents(db, user_id)[:5]
     if not rows:
         ctx.reply_parts.append("No documents have been indexed from Moodle yet.")
         return
@@ -163,8 +163,8 @@ def _act_documents(db: Session, ctx: AgentContext) -> None:
     ctx.sources.append(ChatSourceOut(label="Knowledge Base", courseName="All courses"))
 
 
-def _act_sync(db: Session, ctx: AgentContext) -> None:
-    status = queries.fetch_sync_status(db)
+def _act_sync(db: Session, ctx: AgentContext, user_id: int) -> None:
+    status = queries.fetch_sync_status(db, user_id)
     if status.lastSyncedAt:
         ctx.reply_parts.append(
             f"Last synced **{status.lastSyncedAt:%b %d, %I:%M %p}**, tracking {status.coursesTracked} course(s)."
@@ -180,17 +180,17 @@ def _act_fallback(ctx: AgentContext) -> None:
     )
 
 
-def _act(step: str, db: Session, perception: Perception, ctx: AgentContext) -> None:
+def _act(step: str, db: Session, perception: Perception, ctx: AgentContext, user_id: int) -> None:
     if step == "help":
         _act_help(ctx)
     elif step == "course_lookup" and perception.course:
-        _act_course_lookup(db, perception.course, perception, ctx)
+        _act_course_lookup(db, perception.course, perception, ctx, user_id)
     elif step == "deadlines":
-        _act_deadlines(db, ctx)
+        _act_deadlines(db, ctx, user_id)
     elif step == "documents":
-        _act_documents(db, ctx)
+        _act_documents(db, ctx, user_id)
     elif step == "sync":
-        _act_sync(db, ctx)
+        _act_sync(db, ctx, user_id)
     else:
         _act_fallback(ctx)
 
@@ -198,14 +198,14 @@ def _act(step: str, db: Session, perception: Perception, ctx: AgentContext) -> N
 # --- entry point -------------------------------------------------------------
 
 
-def handle_chat_message_deterministic(db: Session, message: str) -> ChatResponseOut:
-    courses = queries.fetch_courses(db)
+def handle_chat_message_deterministic(db: Session, message: str, user_id: int) -> ChatResponseOut:
+    courses = queries.fetch_courses(db, user_id)
     perception = _perceive(message, courses)
     steps = _reason(perception)
 
     ctx = AgentContext()
     for step in steps:
-        _act(step, db, perception, ctx)
+        _act(step, db, perception, ctx, user_id)
 
     reply = "\n\n".join(part for part in ctx.reply_parts if part) or (
         "I don't have anything to say about that yet."

@@ -53,6 +53,7 @@ from urllib.parse import urljoin
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeoutError
 
 from storage.crud import record_login_diagnostic, save_assignment, save_course, save_resource
+from storage.timezones import parse_moodle_datetime_to_utc
 from moodle.document_downloader import sync_resource_documents
 
 MOODLE_URL_DEFAULT = "https://lms.flame.edu.in"
@@ -863,10 +864,16 @@ _DUE_DATE_PATTERN = re.compile(
 
 
 def _parse_due_date_match(match: re.Match) -> datetime | None:
+    """Returns a naive-UTC datetime — see storage/timezones.py's module
+    docstring for why: Moodle renders this string in IST, and comparing
+    that naive-but-really-IST value against datetime.utcnow() elsewhere
+    (urgency classification, due-soon notifications) silently skewed
+    every comparison by 5:30 without ever showing up as a missing date."""
     try:
-        return datetime.strptime(f"{match.group(2)} {match.group(3)}", "%d %B %Y %H:%M")
+        naive_ist = datetime.strptime(f"{match.group(2)} {match.group(3)}", "%d %B %Y %H:%M")
     except ValueError:
         return None
+    return parse_moodle_datetime_to_utc(naive_ist)
 
 
 def _extract_due_date(text: str, assignment_name: str) -> datetime | None:
@@ -1390,19 +1397,158 @@ def _sync_course_page_assignments(
     return discovered, persisted
 
 
-def run_sync(run_id: int | None = None) -> SyncResult:
-    """The real sync. Raises MoodleCredentialsError/MoodleLoginError/
-    MoodleSyncError on failure — never a raw Playwright/network
-    exception — so the caller (api/routes.py) can record a clean error
-    message on the SyncRun row without leaking a stack trace containing
-    request/response internals that might include session cookies.
+def _sync_all_courses(page, moodle_url: str, result: "SyncResult") -> None:
+    """The actual course/resource/assignment/document traversal, shared by
+    every login strategy below (credential-based _run_sync_with_credentials()
+    and per-user-session-based _run_sync_with_persisted_session()) — this
+    function only ever needs an already-authenticated `page`, regardless
+    of HOW it got that way, so extracting it here (unchanged from before —
+    this is exactly the same code that used to live inline in run_sync())
+    is what let a second login strategy be added without duplicating any
+    of this delicate, already-tested scraping logic. Mutates `result` in
+    place rather than returning a new one, matching how its caller already
+    threads one `result` through the rest of run_sync()'s own bookkeeping
+    (courses_discovered, assignments_discovered, etc.)."""
+    active_courses = _detect_active_courses(page, moodle_url)
+    result.courses_discovered = len(active_courses)
+    # Deliberately no assumption that this is empty or non-empty —
+    # both branches below are logged explicitly either way.
+    if not active_courses:
+        logger.warning(
+            "[SYNC DEBUG] 0 active courses discovered — course traversal, resource "
+            "sync, and assignment sync are all skipped as a direct consequence of "
+            "this (not because they were assumed unnecessary)"
+        )
 
-    run_id (the SyncRun row this call belongs to) is threaded through to
-    _login() so its diagnostic captures persist to the database against
-    that row — see BUILD_LOG.md for why this needed to be database-backed
-    rather than only an in-process variable."""
-    username, password, moodle_url = _get_credentials()
+    logger.info("[SYNC DEBUG] course traversal started: %d course(s) to visit", len(active_courses))
+    logger.info("[SYNC DEBUG] database persistence started")
+    should_probe_multi_page = True
+    course_page_assignment_candidates: list[dict] = []
+    for course in active_courses:
+        try:
+            moodle_id = _course_moodle_id(course["url"])
+            if not moodle_id:
+                logger.warning(
+                    "[SYNC DEBUG] course '%s' discovered but has no parseable Moodle id in its URL (%s) — skipped, not persisted",
+                    course["name"], course["url"],
+                )
+                continue
+            save_course(moodle_id=moodle_id, name=course["name"])
+            result.course_names.append(course["name"])
+            logger.info("[SYNC DEBUG] course written to DB: name=%r moodle_id=%s", course["name"], moodle_id)
 
+            course_resources_discovered, course_resources_persisted, found_multi_page, course_assignment_candidates = _sync_course_resources(
+                page, course["url"], course["name"], moodle_url, probe_multi_page_display=should_probe_multi_page
+            )
+            result.resources_discovered += course_resources_discovered
+            result.resources_synced += course_resources_persisted
+            course_page_assignment_candidates.extend(course_assignment_candidates)
+            if should_probe_multi_page and not found_multi_page:
+                # Bounds the added-request-volume risk from the multi-page-display probe
+                # (see _sync_course_resources()'s docstring) to at most one course per sync.
+                should_probe_multi_page = False
+        except Exception as exc:
+            # One course's page failing to load/parse (a
+            # transient nav timeout, an unusual course-format
+            # DOM) must not abort resource sync for every
+            # other active course still left to visit.
+            logger.warning(
+                "[SYNC DEBUG] failed to sync one course's resources (continuing with the rest): "
+                "course='%s' url=%s: %s: %s",
+                course["name"], course["url"], type(exc).__name__, exc,
+            )
+            continue
+    result.courses_synced = len(result.course_names)
+
+    # Pipeline order: course/resource sync -> document sync ->
+    # assignment sync -> persistence/summary (see BUILD_LOG.md).
+    # Document sync runs BEFORE assignment sync here deliberately.
+    # Verified directly, not assumed, that this is safe:
+    # moodle/document_downloader.py's sync_resource_documents()
+    # (via _stream_resource_to_disk()) never calls page.goto() at
+    # all — it only reads the already-authenticated context's
+    # cookies (page.context.cookies(url), read-only) and performs
+    # its actual file download over a completely separate
+    # urllib.request connection, entirely outside Playwright's
+    # own page/network stack. It cannot change what page.url is,
+    # what's in the DOM, or the session's validity — so running it
+    # before _sync_course_assignments() (which does its own fresh,
+    # absolute page.goto(dashboard_url) regardless of whatever
+    # page.url was beforehand) cannot affect assignment discovery.
+    try:
+        document_counts = sync_resource_documents(page)
+        result.documents_eligible = document_counts.eligible
+        result.documents_downloaded = document_counts.succeeded
+    except Exception as exc:
+        logger.exception("[SYNC DEBUG] document sync failed unexpectedly: %s: %s", type(exc).__name__, exc)
+
+    # Explicit call-site logging (distinct from _sync_course_assignments()'s
+    # own internal logging) so a production run can show, unambiguously,
+    # whether this call was even reached and what it returned — added
+    # specifically to debug a real "assignments_discovered=0" regression;
+    # see BUILD_LOG.md.
+    logger.info(
+        "[SYNC DEBUG] about to call _sync_course_assignments: active_courses_count=%d",
+        len(active_courses),
+    )
+    timeline_persisted_moodle_ids: set[str] = set()
+    if active_courses:
+        result.assignments_discovered, result.assignments_synced, timeline_persisted_moodle_ids = _sync_course_assignments(
+            page, active_courses, moodle_url
+        )
+    else:
+        logger.warning(
+            "[SYNC DEBUG] _sync_course_assignments NOT called: active_courses is empty"
+        )
+    logger.info(
+        "[SYNC DEBUG] returned from _sync_course_assignments: "
+        "assignments_discovered=%d assignments_persisted=%d",
+        result.assignments_discovered, result.assignments_synced,
+    )
+
+    # Secondary assignment-discovery path: every /mod/assign/
+    # link already noticed while scanning each active course's
+    # own page(s) during resource sync above (see
+    # _scan_page_for_resources()'s docstring for why the
+    # Timeline block alone isn't sufficient — no due date, no
+    # Timeline visibility window, or a theme that doesn't
+    # render an entry into it at all are all real gaps this
+    # closes). Assignments the Timeline pass already persisted
+    # are skipped here via timeline_persisted_moodle_ids, so
+    # this only ever adds genuinely new discoveries, never
+    # duplicates or redundant re-fetches.
+    if course_page_assignment_candidates:
+        try:
+            course_page_discovered, course_page_persisted = _sync_course_page_assignments(
+                page, course_page_assignment_candidates, timeline_persisted_moodle_ids
+            )
+            result.assignments_discovered += course_page_discovered
+            result.assignments_synced += course_page_persisted
+        except Exception as exc:
+            logger.exception(
+                "[SYNC DEBUG] course-page assignment discovery failed unexpectedly (Timeline-based "
+                "assignment discovery above is unaffected): %s: %s", type(exc).__name__, exc,
+            )
+
+    logger.info("[SYNC DEBUG] database commit completed")
+    logger.info(
+        "Moodle sync summary: courses_discovered=%d assignments_discovered=%d resources_discovered=%d "
+        "courses_persisted=%d assignments_persisted=%d resources_persisted=%d",
+        result.courses_discovered, result.assignments_discovered, result.resources_discovered,
+        result.courses_synced, result.assignments_synced, result.resources_synced,
+    )
+
+
+def _run_sync_with_credentials(run_id: int | None, moodle_url: str, username: str, password: str) -> SyncResult:
+    """The ORIGINAL run_sync() implementation, unchanged in behavior —
+    unattended, credential-based login via MOODLE_USERNAME/MOODLE_PASSWORD
+    against Moodle's native local-auth form (see this module's own
+    docstring). Per Part 10 of the multi-user task, this is now explicitly
+    the LEGACY, development/demo-only path: used only as a fallback for
+    the one demo user when no real per-user Google-SSO session exists (see
+    run_sync() below) — production, multi-user syncing uses
+    _run_sync_with_persisted_session() instead, which never touches a
+    password at all."""
     result = SyncResult()
     try:
         with sync_playwright() as p:
@@ -1424,134 +1570,7 @@ def run_sync(run_id: int | None = None) -> SyncResult:
                 logger.info("[SYNC DEBUG] _login returned")
                 logger.info("[SYNC DEBUG] dashboard/current page loaded: url=%s title=%r", page.url, _safe_title(page))
 
-                active_courses = _detect_active_courses(page, moodle_url)
-                result.courses_discovered = len(active_courses)
-                # Deliberately no assumption that this is empty or non-empty —
-                # both branches below are logged explicitly either way.
-                if not active_courses:
-                    logger.warning(
-                        "[SYNC DEBUG] 0 active courses discovered — course traversal, resource "
-                        "sync, and assignment sync are all skipped as a direct consequence of "
-                        "this (not because they were assumed unnecessary)"
-                    )
-
-                logger.info("[SYNC DEBUG] course traversal started: %d course(s) to visit", len(active_courses))
-                logger.info("[SYNC DEBUG] database persistence started")
-                should_probe_multi_page = True
-                course_page_assignment_candidates: list[dict] = []
-                for course in active_courses:
-                    try:
-                        moodle_id = _course_moodle_id(course["url"])
-                        if not moodle_id:
-                            logger.warning(
-                                "[SYNC DEBUG] course '%s' discovered but has no parseable Moodle id in its URL (%s) — skipped, not persisted",
-                                course["name"], course["url"],
-                            )
-                            continue
-                        save_course(moodle_id=moodle_id, name=course["name"])
-                        result.course_names.append(course["name"])
-                        logger.info("[SYNC DEBUG] course written to DB: name=%r moodle_id=%s", course["name"], moodle_id)
-
-                        course_resources_discovered, course_resources_persisted, found_multi_page, course_assignment_candidates = _sync_course_resources(
-                            page, course["url"], course["name"], moodle_url, probe_multi_page_display=should_probe_multi_page
-                        )
-                        result.resources_discovered += course_resources_discovered
-                        result.resources_synced += course_resources_persisted
-                        course_page_assignment_candidates.extend(course_assignment_candidates)
-                        if should_probe_multi_page and not found_multi_page:
-                            # Bounds the added-request-volume risk from the multi-page-display probe
-                            # (see _sync_course_resources()'s docstring) to at most one course per sync.
-                            should_probe_multi_page = False
-                    except Exception as exc:
-                        # One course's page failing to load/parse (a
-                        # transient nav timeout, an unusual course-format
-                        # DOM) must not abort resource sync for every
-                        # other active course still left to visit.
-                        logger.warning(
-                            "[SYNC DEBUG] failed to sync one course's resources (continuing with the rest): "
-                            "course='%s' url=%s: %s: %s",
-                            course["name"], course["url"], type(exc).__name__, exc,
-                        )
-                        continue
-                result.courses_synced = len(result.course_names)
-
-                # Pipeline order: course/resource sync -> document sync ->
-                # assignment sync -> persistence/summary (see BUILD_LOG.md).
-                # Document sync runs BEFORE assignment sync here deliberately.
-                # Verified directly, not assumed, that this is safe:
-                # moodle/document_downloader.py's sync_resource_documents()
-                # (via _stream_resource_to_disk()) never calls page.goto() at
-                # all — it only reads the already-authenticated context's
-                # cookies (page.context.cookies(url), read-only) and performs
-                # its actual file download over a completely separate
-                # urllib.request connection, entirely outside Playwright's
-                # own page/network stack. It cannot change what page.url is,
-                # what's in the DOM, or the session's validity — so running it
-                # before _sync_course_assignments() (which does its own fresh,
-                # absolute page.goto(dashboard_url) regardless of whatever
-                # page.url was beforehand) cannot affect assignment discovery.
-                try:
-                    document_counts = sync_resource_documents(page)
-                    result.documents_eligible = document_counts.eligible
-                    result.documents_downloaded = document_counts.succeeded
-                except Exception as exc:
-                    logger.exception("[SYNC DEBUG] document sync failed unexpectedly: %s: %s", type(exc).__name__, exc)
-
-                # Explicit call-site logging (distinct from _sync_course_assignments()'s
-                # own internal logging) so a production run can show, unambiguously,
-                # whether this call was even reached and what it returned — added
-                # specifically to debug a real "assignments_discovered=0" regression;
-                # see BUILD_LOG.md.
-                logger.info(
-                    "[SYNC DEBUG] about to call _sync_course_assignments: active_courses_count=%d",
-                    len(active_courses),
-                )
-                timeline_persisted_moodle_ids: set[str] = set()
-                if active_courses:
-                    result.assignments_discovered, result.assignments_synced, timeline_persisted_moodle_ids = _sync_course_assignments(
-                        page, active_courses, moodle_url
-                    )
-                else:
-                    logger.warning(
-                        "[SYNC DEBUG] _sync_course_assignments NOT called: active_courses is empty"
-                    )
-                logger.info(
-                    "[SYNC DEBUG] returned from _sync_course_assignments: "
-                    "assignments_discovered=%d assignments_persisted=%d",
-                    result.assignments_discovered, result.assignments_synced,
-                )
-
-                # Secondary assignment-discovery path: every /mod/assign/
-                # link already noticed while scanning each active course's
-                # own page(s) during resource sync above (see
-                # _scan_page_for_resources()'s docstring for why the
-                # Timeline block alone isn't sufficient — no due date, no
-                # Timeline visibility window, or a theme that doesn't
-                # render an entry into it at all are all real gaps this
-                # closes). Assignments the Timeline pass already persisted
-                # are skipped here via timeline_persisted_moodle_ids, so
-                # this only ever adds genuinely new discoveries, never
-                # duplicates or redundant re-fetches.
-                if course_page_assignment_candidates:
-                    try:
-                        course_page_discovered, course_page_persisted = _sync_course_page_assignments(
-                            page, course_page_assignment_candidates, timeline_persisted_moodle_ids
-                        )
-                        result.assignments_discovered += course_page_discovered
-                        result.assignments_synced += course_page_persisted
-                    except Exception as exc:
-                        logger.exception(
-                            "[SYNC DEBUG] course-page assignment discovery failed unexpectedly (Timeline-based "
-                            "assignment discovery above is unaffected): %s: %s", type(exc).__name__, exc,
-                        )
-
-                logger.info("[SYNC DEBUG] database commit completed")
-                logger.info(
-                    "Moodle sync summary: courses_discovered=%d assignments_discovered=%d resources_discovered=%d "
-                    "courses_persisted=%d assignments_persisted=%d resources_persisted=%d",
-                    result.courses_discovered, result.assignments_discovered, result.resources_discovered,
-                    result.courses_synced, result.assignments_synced, result.resources_synced,
-                )
+                _sync_all_courses(page, moodle_url, result)
             finally:
                 # Each wrapped separately and never allowed to raise: a
                 # browser/context that's already crashed or been killed
@@ -1589,3 +1608,118 @@ def run_sync(run_id: int | None = None) -> SyncResult:
 
     logger.info("[SYNC DEBUG] sync completed")
     return result
+
+
+class MoodleSessionExpiredError(MoodleSyncError):
+    """Raised by run_sync() when a real (non-demo) user has no valid
+    persisted Moodle session and therefore no credential-based fallback
+    is used for them (see run_sync()'s docstring, Part 10) — the caller
+    (api/routes.py) surfaces this as a clear "reconnect Moodle" state
+    rather than a generic sync failure."""
+
+
+def _run_sync_with_persisted_session(user_id: int, moodle_url: str) -> SyncResult:
+    """Production, per-user sync path (Part 3/9 of the multi-user task):
+    reuses this user's own already-authenticated Playwright profile (see
+    moodle/browser.py's get_user_browser_profile_dir()/
+    check_moodle_session() — the caller, run_sync(), already confirmed
+    this session is valid before calling this function) instead of
+    logging in with a password at all. Never fills a login form, never
+    touches MOODLE_USERNAME/MOODLE_PASSWORD."""
+    from storage.paths import get_user_browser_profile_dir
+
+    result = SyncResult()
+    profile_dir = get_user_browser_profile_dir(user_id)
+    with sync_playwright() as p:
+        context = p.chromium.launch_persistent_context(user_data_dir=str(profile_dir), headless=True)
+        try:
+            page = context.pages[0] if context.pages else context.new_page()
+            page.goto(moodle_url, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(1000)
+            logger.info("[SYNC DEBUG] user=%s syncing via persisted Moodle session (no login step)", user_id)
+            _sync_all_courses(page, moodle_url, result)
+        except Exception as exc:
+            logger.exception(
+                "[SYNC DEBUG] user=%s sync failed with a persisted session: %s: %s", user_id, type(exc).__name__, exc
+            )
+            raise MoodleSyncError(f"Sync failed: {exc}") from exc
+        finally:
+            try:
+                context.close()
+            except Exception as exc:
+                logger.warning("[SYNC DEBUG] context.close() failed during cleanup (ignored): %s: %s", type(exc).__name__, exc)
+
+    logger.info("[SYNC DEBUG] user=%s sync completed", user_id)
+    return result
+
+
+def run_sync(run_id: int | None = None, user_id: int | None = None) -> SyncResult:
+    """The real sync's entry point. Raises MoodleCredentialsError/
+    MoodleLoginError/MoodleSyncError/MoodleSessionExpiredError on failure
+    — never a raw Playwright/network exception — so the caller (api/
+    routes.py) can record a clean error message on the SyncRun row
+    without leaking a stack trace containing request/response internals
+    that might include session cookies.
+
+    run_id (the SyncRun row this call belongs to) is threaded through to
+    _login() so its diagnostic captures persist to the database against
+    that row — see BUILD_LOG.md for why this needed to be database-backed
+    rather than only an in-process variable.
+
+    user_id (multi-user foundation — Parts 3/9/10) picks the login
+    strategy:
+      - A real per-user Moodle session already connected (see
+        moodle/browser.py's check_moodle_session()) -> reuse it, via
+        _run_sync_with_persisted_session() — no password touched at all.
+      - No valid per-user session, but this IS the legacy demo user
+        (storage/database.py's _DEMO_USER_EMAIL) -> fall back to the
+        original credential-based service-account path
+        (_run_sync_with_credentials()), explicitly marked dev/demo-only.
+      - No valid per-user session, and this is any OTHER real user ->
+        MoodleSessionExpiredError — they must complete the manual
+        Google-SSO connect flow (moodle/browser.py's
+        connect_user_interactively(), via api/routes.py's
+        POST /api/moodle/connect) before a sync can run for them; there is
+        no credential fallback for a real user, since none of them have
+        MOODLE_USERNAME/MOODLE_PASSWORD-style credentials at all — their
+        Moodle identity is Google SSO.
+      - user_id=None (no multi-user context at all — e.g. an existing
+        test/script that predates this feature) -> unchanged, original
+        behavior: goes straight to the credential-based path, exactly as
+        run_sync() always did before this parameter existed."""
+    from storage.crud import sync_user_scope
+
+    with sync_user_scope(user_id):
+        if user_id is None:
+            username, password, moodle_url = _get_credentials()
+            return _run_sync_with_credentials(run_id, moodle_url, username, password)
+
+        moodle_url = os.environ.get("MOODLE_URL") or MOODLE_URL_DEFAULT
+
+        from moodle.browser import check_moodle_session
+        from storage.database import _DEMO_USER_EMAIL
+        from storage.models import User
+        from storage.database import SessionLocal
+
+        session_status = check_moodle_session(user_id)
+        if session_status == "connected":
+            return _run_sync_with_persisted_session(user_id, moodle_url)
+
+        with SessionLocal() as db:
+            user = db.get(User, user_id)
+            is_demo_user = user is not None and user.email == _DEMO_USER_EMAIL
+
+        if is_demo_user:
+            try:
+                username, password, credential_moodle_url = _get_credentials()
+            except MoodleCredentialsError:
+                raise MoodleSessionExpiredError(
+                    "No valid Moodle session for the demo user, and no MOODLE_USERNAME/MOODLE_PASSWORD "
+                    "fallback is configured either. Connect Moodle via the manual sign-in flow."
+                )
+            logger.info("[SYNC DEBUG] user=%s (demo) falling back to legacy credential-based sync", user_id)
+            return _run_sync_with_credentials(run_id, credential_moodle_url, username, password)
+
+        raise MoodleSessionExpiredError(
+            f"No valid Moodle session for user {user_id} — reconnect Moodle before syncing."
+        )

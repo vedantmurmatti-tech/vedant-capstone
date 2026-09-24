@@ -81,9 +81,9 @@ def test_requirements_extracted() -> None:
 
 def test_actionable_steps_generated() -> None:
     db, assignment, course = get_real_assessment_2()
-    matched_resource = queries.fetch_resource_by_moodle_id(db, assignment.moodle_id)
+    matched_resource = queries.fetch_resource_by_moodle_id(db, assignment.moodle_id, assignment.user_id)
     related_documents = (
-        queries.fetch_documents_for_resource(db, matched_resource.id) if matched_resource else []
+        queries.fetch_documents_for_resource(db, matched_resource.id, assignment.user_id) if matched_resource else []
     )
     plan = plan_for_assignment(
         assignment, course, matched_resource=matched_resource, related_documents=related_documents
@@ -113,9 +113,9 @@ def test_actionable_steps_generated() -> None:
 
 def test_missing_information_identified() -> None:
     db, assignment, course = get_real_assessment_2()
-    matched_resource = queries.fetch_resource_by_moodle_id(db, assignment.moodle_id)
+    matched_resource = queries.fetch_resource_by_moodle_id(db, assignment.moodle_id, assignment.user_id)
     related_documents = (
-        queries.fetch_documents_for_resource(db, matched_resource.id) if matched_resource else []
+        queries.fetch_documents_for_resource(db, matched_resource.id, assignment.user_id) if matched_resource else []
     )
     plan = plan_for_assignment(
         assignment, course, matched_resource=matched_resource, related_documents=related_documents
@@ -134,6 +134,8 @@ def test_missing_information_identified() -> None:
 
 
 def test_source_grounding_preserved() -> None:
+    from storage.timezones import to_ist_isoformat
+
     db, assignment, course = get_real_assessment_2()
     plan = plan_for_assignment(assignment, course)
 
@@ -142,7 +144,9 @@ def test_source_grounding_preserved() -> None:
         plan.grounding.submission_url == assignment.submission_url
         and plan.grounding.moodle_assignment_id == assignment.moodle_id
         and plan.grounding.moodle_course_id == course.moodle_id
-        and plan.due_date == assignment.due_date.isoformat(),
+        # due_date is now the IST-aware ISO string (e.g. "...+05:30"), not a
+        # naive one — see BUILD_LOG.md's date-pipeline/timezone entry.
+        and plan.due_date == to_ist_isoformat(assignment.due_date),
         f"submission_url={plan.grounding.submission_url}",
     )
     db.close()

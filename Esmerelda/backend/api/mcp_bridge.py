@@ -42,6 +42,7 @@ used.
 
 import os
 import shutil
+import sqlite3
 import stat
 import sys
 from contextlib import asynccontextmanager
@@ -60,9 +61,19 @@ from storage.paths import get_database_path, get_mcp_readonly_snapshot_path
 # reads/writes, instead of separately hardcoding `storage/` — nothing
 # about the MCP protocol/session/read-only-enforcement logic below changed.
 LIVE_DB_PATH = get_database_path()
-READONLY_SNAPSHOT_PATH = get_mcp_readonly_snapshot_path()
 
 _ALLOWED_TOOLS = {"read_query", "list_tables", "describe_table"}
+
+# Every table that carries a user_id ownership column (see
+# storage/models.py's multi-user foundation) — _make_readonly_snapshot()
+# deletes every OTHER user's rows from these tables in the snapshot
+# before the read-only SQL tool ever opens it, so a raw `read_query` SQL
+# call (which has no ORM/query-layer scoping to rely on at all) can never
+# see another user's courses/assignments/resources/documents/sync runs
+# either. `users` itself is filtered down to just this one row, and
+# document_versions (owned indirectly via documents.id, not its own
+# user_id column) is filtered by a join instead.
+_USER_SCOPED_TABLES = ("courses", "assignments", "resources", "documents", "sync_runs")
 
 
 def _sqlite_server_executable() -> str:
@@ -79,19 +90,42 @@ def _sqlite_server_executable() -> str:
     )
 
 
-def _make_readonly_snapshot() -> Path:
-    if READONLY_SNAPSHOT_PATH.exists():
-        os.chmod(READONLY_SNAPSHOT_PATH, stat.S_IWRITE)
-        READONLY_SNAPSHOT_PATH.unlink()
-    shutil.copyfile(LIVE_DB_PATH, READONLY_SNAPSHOT_PATH)
-    os.chmod(READONLY_SNAPSHOT_PATH, stat.S_IREAD)
-    return READONLY_SNAPSHOT_PATH
+def _make_readonly_snapshot(user_id: int) -> Path:
+    """Copies the live database, then deletes every OTHER user's rows from
+    the copy (see _USER_SCOPED_TABLES) before marking it read-only — so
+    the real isolation boundary for the SQL tool is enforced by the data
+    simply not being present in the file the server ever opens, not by
+    trusting the model to only ever write a WHERE user_id=... clause."""
+    snapshot_path = get_mcp_readonly_snapshot_path(user_id)
+    if snapshot_path.exists():
+        os.chmod(snapshot_path, stat.S_IWRITE)
+        snapshot_path.unlink()
+    shutil.copyfile(LIVE_DB_PATH, snapshot_path)
+
+    conn = sqlite3.connect(str(snapshot_path))
+    try:
+        for table in _USER_SCOPED_TABLES:
+            conn.execute(f"DELETE FROM {table} WHERE user_id IS NOT ? OR user_id IS NULL", (user_id,))
+        conn.execute("DELETE FROM users WHERE id IS NOT ?", (user_id,))
+        # document_versions has no user_id column of its own (owned
+        # indirectly via documents.document_id) — filtered by what
+        # survived the documents DELETE above, not a separate condition.
+        conn.execute(
+            "DELETE FROM document_versions WHERE document_id NOT IN (SELECT id FROM documents)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    os.chmod(snapshot_path, stat.S_IREAD)
+    return snapshot_path
 
 
-def _remove_readonly_snapshot() -> None:
-    if READONLY_SNAPSHOT_PATH.exists():
-        os.chmod(READONLY_SNAPSHOT_PATH, stat.S_IWRITE)
-        READONLY_SNAPSHOT_PATH.unlink()
+def _remove_readonly_snapshot(user_id: int) -> None:
+    snapshot_path = get_mcp_readonly_snapshot_path(user_id)
+    if snapshot_path.exists():
+        os.chmod(snapshot_path, stat.S_IWRITE)
+        snapshot_path.unlink()
 
 
 @dataclass
@@ -164,13 +198,16 @@ class LoggingSqliteSession(ClientSession):
 
 
 @asynccontextmanager
-async def sqlite_mcp_session(call_log: McpCallLog) -> AsyncIterator[ClientSession]:
+async def sqlite_mcp_session(call_log: McpCallLog, user_id: int) -> AsyncIterator[ClientSession]:
     """Launches the real mcp-server-sqlite subprocess over stdio, connects
     with mcp.ClientSession, and calls session.initialize(), against a
-    fresh read-only snapshot of the live database. Guarantees the
+    fresh read-only snapshot of the live database, filtered to just this
+    one user's rows (see _make_readonly_snapshot()) — the SQL tool's own
+    isolation boundary, required and enforced here rather than left to
+    whatever WHERE clause the model happens to write. Guarantees the
     subprocess and its streams are closed and the snapshot is removed even
     if the caller raises."""
-    snapshot_path = _make_readonly_snapshot()
+    snapshot_path = _make_readonly_snapshot(user_id)
     server_params = StdioServerParameters(
         command=_sqlite_server_executable(),
         args=["--db-path", str(snapshot_path)],
@@ -182,4 +219,4 @@ async def sqlite_mcp_session(call_log: McpCallLog) -> AsyncIterator[ClientSessio
                 await session.initialize()
                 yield session
     finally:
-        _remove_readonly_snapshot()
+        _remove_readonly_snapshot(user_id)

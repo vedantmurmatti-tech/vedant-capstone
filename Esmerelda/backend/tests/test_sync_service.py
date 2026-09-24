@@ -101,7 +101,9 @@ check("3b. Returns None when there's no id= in the URL", _course_moodle_id("http
 # 4. Due-date parsing from real Moodle Timeline-block text shape.
 timeline_text = "Header noise\nFriday, 20 September 2026 11:59\nAssessment 2 is due"
 due = _extract_due_date(timeline_text, "Assessment 2 is due")
-check("4. Due date parsed from timeline text", due is not None and (due.year, due.month, due.day, due.hour, due.minute) == (2026, 9, 20, 11, 59))
+# Returned as naive-UTC (see storage/timezones.py) — the scraped "11:59" is
+# Moodle's own IST display time, converted here to 06:29 UTC.
+check("4. Due date parsed from timeline text", due is not None and (due.year, due.month, due.day, due.hour, due.minute) == (2026, 9, 20, 6, 29))
 check("4b. No match when the assignment name isn't present", _extract_due_date(timeline_text, "Some other assignment is due") is None)
 check("4c. No crash, returns None, when there's no date in the preceding text", _extract_due_date("Assessment 2 is due", "Assessment 2 is due") is None)
 

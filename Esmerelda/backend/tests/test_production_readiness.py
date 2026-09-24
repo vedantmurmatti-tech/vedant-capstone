@@ -138,7 +138,7 @@ with SessionLocal() as session:
     stale_id = stale.id
 
 with SessionLocal() as session:
-    status = fetch_sync_status(session)
+    status = fetch_sync_status(session, None)
     print(f"STATE:{status.state}")
     print(f"HAS_ERROR:{bool(status.lastError)}")
 
@@ -179,11 +179,13 @@ sys.modules["moodle.sync_service"] = None
 from storage.database import init_db, SessionLocal
 from storage.models import SyncRun
 from storage.crud import create_sync_run
+from api.auth import get_or_create_demo_user
 from api.routes import _run_moodle_sync
 init_db()
 
-run = create_sync_run()
-_run_moodle_sync(run.id)
+_user_id = get_or_create_demo_user()
+run = create_sync_run(_user_id)
+_run_moodle_sync(run.id, _user_id)
 
 with SessionLocal() as session:
     row = session.get(SyncRun, run.id)

@@ -72,15 +72,23 @@ class RetrievedChunk:
     score: int
 
 
-def count_indexed_documents(db: Session) -> int:
-    return db.query(Document).filter(Document.extracted_text.isnot(None)).count()
+def count_indexed_documents(db: Session, user_id: int) -> int:
+    return (
+        db.query(Document)
+        .filter(Document.extracted_text.isnot(None), Document.user_id == user_id)
+        .count()
+    )
 
 
-def search_documents(db: Session, query: str, max_chunks: int = _MAX_CHUNKS_RETURNED) -> list[RetrievedChunk]:
+def search_documents(
+    db: Session, query: str, user_id: int, max_chunks: int = _MAX_CHUNKS_RETURNED
+) -> list[RetrievedChunk]:
     """Real keyword-overlap search over already-extracted document text.
     Returns [] (not an error) when nothing is indexed yet or nothing
     matches — the caller (api/gemini_tools.py's search_document_content)
-    is responsible for saying so honestly rather than fabricating."""
+    is responsible for saying so honestly rather than fabricating.
+    user_id-scoped so one user's chat can never retrieve excerpts from
+    another user's documents."""
     words = _significant_words(query)
     if not words:
         return []
@@ -89,7 +97,7 @@ def search_documents(db: Session, query: str, max_chunks: int = _MAX_CHUNKS_RETU
     # least one significant query word are ever loaded into Python.
     candidates = (
         db.query(Document, Resource, Course)
-        .filter(Document.extracted_text.isnot(None))
+        .filter(Document.extracted_text.isnot(None), Document.user_id == user_id)
         .outerjoin(Resource, Document.resource_id == Resource.id)
         .outerjoin(Course, Resource.course_id == Course.id)
         .filter(or_(*[Document.extracted_text.ilike(f"%{w}%") for w in words]))

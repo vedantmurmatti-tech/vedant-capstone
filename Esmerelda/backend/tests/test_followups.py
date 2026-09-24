@@ -207,11 +207,12 @@ def test_no_duplicates_and_not_echoing_user_message() -> None:
 
 
 def test_deterministic_agent_uses_shared_generator() -> None:
+    from api.auth import get_or_create_demo_user
     from api.deterministic_agent import handle_chat_message_deterministic
     from storage.database import SessionLocal
 
     db = SessionLocal()
-    response = handle_chat_message_deterministic(db, "what's due this week?")
+    response = handle_chat_message_deterministic(db, "what's due this week?", get_or_create_demo_user())
     db.close()
 
     check(
