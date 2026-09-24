@@ -1,8 +1,147 @@
+import logging
 from pathlib import Path
+
 from playwright.sync_api import sync_playwright
 
+from storage.paths import get_user_browser_profile_dir
+
 MOODLE_URL = "https://lms.flame.edu.in"
+# Legacy, pre-multi-user shared profile — see BUILD_LOG.md's multi-user
+# foundation entry. Left on disk and still used by this module's own
+# main()/get_authenticated_page() (the standalone interactive tool this
+# file has always been — never wired into api/routes.py's live sync
+# pipeline, which is moodle/sync_service.py's separate, credential-based
+# run_sync()), but every NEW per-user flow below uses
+# get_user_browser_profile_dir(user_id) instead, never this constant.
 PROFILE_DIR = Path(__file__).parent / "browser_profile"
+
+logger = logging.getLogger("esmerelda.sync")
+
+_LOGGED_IN_MARKER_SELECTOR = "a[href*='/login/logout.php'], .usermenu"
+_LOGIN_FORM_SELECTOR = "#login #username, form#login"
+
+
+def check_moodle_session(user_id: int, *, headless: bool = True) -> str:
+    """Loads this user's own persisted Playwright profile (see
+    get_user_browser_profile_dir()), navigates to Moodle, and reports
+    whether the persisted session is still authenticated — WITHOUT ever
+    attempting a login itself (no credentials touched, no form filled).
+    Returns "connected" or "expired".
+
+    Callers (api/routes.py's Moodle-connect endpoints) are responsible for
+    the third real state, "never connected" — tracked via
+    User.moodle_session_status being NULL, checked BEFORE this function is
+    even called, since a user who has never completed the manual connect
+    flow has no session worth checking (and a freshly-launched, never-
+    logged-in Chromium profile directory is not reliably empty on disk —
+    Chromium itself writes its own scaffold files on first launch
+    regardless of login state — so "is the directory empty" is not a safe
+    way to infer "never connected" here).
+
+    Logs exactly the two lines Part 3 of the multi-user task asked for —
+    "[MOODLE AUTH] Existing session valid — skipping login" or
+    "[MOODLE AUTH] Session expired — requiring re-authentication" — and
+    NEVER logs a password, cookie, access token, or session id; only this
+    plain status string and the user id.
+
+    This function's own browser context is always closed before
+    returning, whether the check succeeds or raises — it must never be
+    the thing holding a lock on this user's profile directory that a
+    later real sync/connect then can't open."""
+    profile_dir = get_user_browser_profile_dir(user_id)
+
+    with sync_playwright() as p:
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=str(profile_dir),
+            headless=headless,
+        )
+        try:
+            page = context.pages[0] if context.pages else context.new_page()
+            try:
+                page.goto(MOODLE_URL, wait_until="domcontentloaded", timeout=30000)
+                page.wait_for_timeout(1500)
+            except Exception as exc:
+                logger.warning("[MOODLE AUTH] user=%s could not reach Moodle to check session: %s", user_id, exc)
+                logger.info("[MOODLE AUTH] Session expired — requiring re-authentication (user=%s)", user_id)
+                return "expired"
+
+            logged_in = page.locator(_LOGGED_IN_MARKER_SELECTOR).count() > 0
+            has_login_form = page.locator(_LOGIN_FORM_SELECTOR).count() > 0
+
+            if logged_in and not has_login_form:
+                logger.info("[MOODLE AUTH] Existing session valid — skipping login (user=%s)", user_id)
+                return "connected"
+
+            logger.info("[MOODLE AUTH] Session expired — requiring re-authentication (user=%s)", user_id)
+            return "expired"
+        finally:
+            context.close()
+
+
+def connect_user_interactively(user_id: int, *, timeout_seconds: int = 180) -> str:
+    """The manual, real, per-user Google-SSO connect flow (Part 7): opens
+    a REAL, VISIBLE browser window on whatever machine this backend
+    process is running on, against this user's own persisted profile
+    directory, and waits for the user to complete Google sign-in
+    themselves — never touches a password or 2FA code programmatically.
+    Polls for the same logged-in marker check_moodle_session() uses,
+    every 2 seconds, up to timeout_seconds, so it returns as soon as the
+    user finishes (rather than requiring a blocking input() prompt, which
+    would hold this open across an HTTP request/response cycle).
+
+    Returns "connected" if the user completed sign-in before the timeout,
+    "timed_out" otherwise (the window is still left open in that case —
+    an immediate retry of the connect flow will simply reuse this same
+    partially-progressed session next time, not lose anything).
+
+    KNOWN LIMITATION, stated plainly rather than glossed over (see
+    BUILD_LOG.md): this opens a window on the BACKEND's own machine, not
+    the end user's browser. That is fine for local/single-machine
+    development and testing (which is what this batch's own test matrix
+    exercises), but is NOT a viable mechanism for a real hosted, multi-
+    tenant deployment where the backend runs on a server the student
+    never has physical/display access to — a real production version of
+    this flow would need a different mechanism entirely (e.g. a
+    server-side headless SSO relay, or moving to Moodle Web Service
+    tokens once FLAME's Moodle admin confirms student self-service token
+    creation is enabled — see BUILD_LOG.md's earlier investigation
+    entries). This function is the "cleanest minimal local/dev identity
+    mechanism" Part 8 explicitly allows for now, not a claim that it's
+    production-ready."""
+    profile_dir = get_user_browser_profile_dir(user_id)
+
+    with sync_playwright() as p:
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=str(profile_dir),
+            headless=False,
+        )
+        try:
+            page = context.pages[0] if context.pages else context.new_page()
+            try:
+                page.goto(MOODLE_URL, wait_until="domcontentloaded", timeout=30000)
+            except Exception as exc:
+                logger.warning("[MOODLE AUTH] user=%s could not open Moodle for connect: %s", user_id, exc)
+
+            logger.info("[MOODLE AUTH] user=%s connect flow opened — waiting for manual Google sign-in", user_id)
+
+            elapsed = 0
+            poll_interval = 2000
+            while elapsed < timeout_seconds * 1000:
+                page.wait_for_timeout(poll_interval)
+                elapsed += poll_interval
+                try:
+                    logged_in = page.locator(_LOGGED_IN_MARKER_SELECTOR).count() > 0
+                    has_login_form = page.locator(_LOGIN_FORM_SELECTOR).count() > 0
+                except Exception:
+                    continue
+                if logged_in and not has_login_form:
+                    logger.info("[MOODLE AUTH] user=%s completed manual sign-in — session persisted", user_id)
+                    return "connected"
+
+            logger.info("[MOODLE AUTH] user=%s connect flow timed out after %ds", user_id, timeout_seconds)
+            return "timed_out"
+        finally:
+            context.close()
 
 
 def handle_dialog(dialog):

@@ -200,8 +200,10 @@ try:
         "5. CRITICAL: a real assignment page with a 'Due date' label is correctly parsed into a real "
         "datetime — this is the fix for assignments discovered only via the course-page path, which "
         "previously always stored due_date=NULL (displaying as 'Unknown' in the UI) because it had no "
-        "Timeline text to read a due date from at all",
-        "WITH_DUE_DATE:2026-09-20T11:59:00" in proc.stdout,
+        "Timeline text to read a due date from at all. Stored as naive-UTC (see "
+        "storage/timezones.py) — the scraped '11:59' is Moodle's own IST display time, converted here "
+        "to 06:29 UTC, the correct underlying instant.",
+        "WITH_DUE_DATE:2026-09-20T06:29:00" in proc.stdout,
     )
     check(
         "6. A page with no 'Due date' label at all yields None, not a crash or a fabricated date",

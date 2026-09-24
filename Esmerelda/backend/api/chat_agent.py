@@ -35,6 +35,7 @@ logger = logging.getLogger("esmerelda.chat")
 async def handle_chat_message(
     db: Session,
     message: str,
+    user_id: int,
     history: list[dict[str, str]] | None = None,
     conversation_id: str | None = None,
 ) -> ChatResponseOut:
@@ -45,15 +46,20 @@ async def handle_chat_message(
     in shape — `history` is just prepended ahead of `message` in the same
     `messages` list Groq/Gemini already built from a single message.
     `conversation_id` is never used to look anything up (no server-side
-    session state exists) — it's here only for log correlation."""
+    session state exists) — it's here only for log correlation.
+
+    `user_id` (multi-user foundation — see BUILD_LOG.md) is threaded into
+    every tier below, which thread it further into every tool/query each
+    one makes — the one thing every tier shares that actually enforces
+    the ownership boundary, regardless of which tier ends up answering."""
     logger.info(
-        "[CHAT] query received: %r (conversation=%s, history_turns=%d)",
-        message[:200], conversation_id, len(history or []),
+        "[CHAT] query received: %r (conversation=%s, history_turns=%d, user=%d)",
+        message[:200], conversation_id, len(history or []), user_id,
     )
-    logger.info("[CHAT] documents indexed=%d", document_retrieval.count_indexed_documents(db))
+    logger.info("[CHAT] documents indexed=%d", document_retrieval.count_indexed_documents(db, user_id))
 
     try:
-        return await handle_chat_message_groq(db, message, history=history)
+        return await handle_chat_message_groq(db, message, user_id, history=history)
     except GroqUnavailableError as exc:
         # Python deletes `as`-bound exception variables at the end of their
         # except block, so the message is copied into a plain str here to
@@ -61,7 +67,7 @@ async def handle_chat_message(
         groq_reason = str(exc)
 
     try:
-        response = await handle_chat_message_gemini(db, message, history=history)
+        response = await handle_chat_message_gemini(db, message, user_id, history=history)
         response.reply = (
             f"_(Groq was unavailable — {groq_reason} — answered by Gemini instead.)_\n\n" + response.reply
         )
@@ -72,7 +78,7 @@ async def handle_chat_message(
         # the single latest message, not an LLM — it never used history
         # before this change and still doesn't; there is no "context" for
         # it to lose.
-        fallback = deterministic_agent.handle_chat_message_deterministic(db, message)
+        fallback = deterministic_agent.handle_chat_message_deterministic(db, message, user_id)
         fallback.reply = (
             f"_(Both Groq and Gemini were unavailable — Groq: {groq_reason}; Gemini: {gemini_reason} — "
             "answering with Esmerelda's deterministic fallback instead.)_\n\n" + fallback.reply

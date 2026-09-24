@@ -48,12 +48,43 @@ def get_documents_dir() -> Path:
     return documents_dir
 
 
-def get_mcp_readonly_snapshot_path() -> Path:
+def get_mcp_readonly_snapshot_path(user_id: int | None = None) -> Path:
     """A throwaway, per-session copy of the database the SQLite MCP server
     is pointed at (see api/mcp_bridge.py) — lives alongside the real
     database so it moves with `ESMERELDA_DATA_DIR` too, but it's ephemeral:
-    recreated fresh each session and deleted when the session closes."""
-    return get_data_dir() / "_esmerelda_mcp_readonly_snapshot.db"
+    recreated fresh each session and deleted when the session closes.
+
+    Keyed by user_id (multi-user isolation — see BUILD_LOG.md's
+    multi-user foundation entry) both so mcp_bridge.py can filter each
+    user's snapshot down to only their own rows before the read-only SQL
+    tool ever opens it, AND so two users' concurrent chat requests never
+    race over the same snapshot file."""
+    suffix = f"_user{user_id}" if user_id is not None else ""
+    return get_data_dir() / f"_esmerelda_mcp_readonly_snapshot{suffix}.db"
+
+
+def get_browser_profiles_dir() -> Path:
+    """Root directory for per-user Moodle Playwright profiles (see
+    moodle/browser.py) — moves with ESMERELDA_DATA_DIR like everything
+    else in this module. Each user gets an isolated subdirectory under
+    here (get_user_browser_profile_dir()); no user's cookies/session
+    state is ever stored anywhere shared."""
+    profiles_dir = get_data_dir() / "browser_profiles"
+    profiles_dir.mkdir(parents=True, exist_ok=True)
+    return profiles_dir
+
+
+def get_user_browser_profile_dir(user_id: int) -> Path:
+    """The one Playwright `user_data_dir` for this specific Esmerelda user
+    — isolated from every other user's, and from the old, pre-multi-user
+    shared `moodle/browser_profile/` directory (see BUILD_LOG.md's
+    multi-user foundation entry), which remains on disk untouched as the
+    legacy single-account dev/demo fallback (moodle/browser.py's
+    get_service_account_page()) but is never used for a real per-user
+    session."""
+    user_dir = get_browser_profiles_dir() / str(user_id)
+    user_dir.mkdir(parents=True, exist_ok=True)
+    return user_dir
 
 
 def resolve_document_path(file_path: str) -> Path:

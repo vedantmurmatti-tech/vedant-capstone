@@ -1,5 +1,3 @@
-2026/09/17-11:07:22.928 14e0 Reusing MANIFEST D:\agentic ai\vedant-capstone\Esmerelda\backend\moodle\browser_profile\Default\Local Storage\leveldb/MANIFEST-000001
-2026/09/17-11:07:22.929 14e0 Recovering log #65
-2026/09/17-11:07:22.930 14e0 Level-0 table #68: started
-2026/09/17-11:07:22.936 14e0 Level-0 table #68: 29877 bytes OK
-2026/09/17-11:07:22.940 14e0 Delete type=0 #65
+2026/09/25-00:34:53.238 26f4 Reusing MANIFEST D:\agentic ai\vedant-capstone\Esmerelda\backend\moodle\browser_profile\Default\Local Storage\leveldb/MANIFEST-000001
+2026/09/25-00:34:53.242 26f4 Recovering log #69
+2026/09/25-00:34:53.244 26f4 Reusing old log D:\agentic ai\vedant-capstone\Esmerelda\backend\moodle\browser_profile\Default\Local Storage\leveldb/000069.log 

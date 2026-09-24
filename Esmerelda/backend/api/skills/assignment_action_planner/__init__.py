@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Literal
 
 from storage.models import Assignment, Course, Document, Resource
+from storage.timezones import to_ist_aware, to_ist_isoformat
 
 Urgency = str  # "overdue" | "due-soon" | "upcoming" | "unscheduled"
 Status = Literal["completed", "incomplete", "unverified"]
@@ -39,6 +40,43 @@ _RECOMMENDATION: dict[Urgency, str] = {
     "upcoming": "on track — no action needed yet",
     "unscheduled": "no due date recorded — confirm on the course page",
 }
+
+# Finer-grained, calendar-day-based classification requested alongside the
+# existing hours-based `classify_urgency()` above (kept as-is — it already
+# drives plan_actions()' sort order and _RECOMMENDATION text, and existing
+# tests assert its exact "overdue"/"due-soon"/"upcoming"/"unscheduled"
+# values, so it isn't changed). This is additive, exposed as a second field
+# in tool output (see api/gemini_tools.py) so reasoning can distinguish
+# "due tomorrow" from "due in 3 days" — both of which classify_urgency()
+# alone would only ever call "due-soon" or "upcoming".
+DateUrgency = str  # "overdue" | "due_today" | "due_tomorrow" | "due_within_3_days" | "due_later" | "no_due_date"
+
+_DATE_URGENCY_ORDER: dict[DateUrgency, int] = {
+    "overdue": 0, "due_today": 1, "due_tomorrow": 2, "due_within_3_days": 3, "due_later": 4, "no_due_date": 5,
+}
+
+
+def classify_date_urgency(due_date: datetime | None, *, now: datetime) -> DateUrgency:
+    """`due_date`/`now` are both naive-UTC (see storage/timezones.py's
+    module docstring). Compared as calendar DAYS in IST — not raw hours —
+    so "today"/"tomorrow" match the student's own local day rather than
+    UTC's, which would disagree with IST near midnight. Never invents a
+    priority for an assignment with no due date: that case is its own
+    explicit "no_due_date" bucket, never folded into "due_later"."""
+    if due_date is None:
+        return "no_due_date"
+    if due_date < now:
+        return "overdue"
+    due_ist_date = to_ist_aware(due_date).date()
+    now_ist_date = to_ist_aware(now).date()
+    days_ahead = (due_ist_date - now_ist_date).days
+    if days_ahead <= 0:
+        return "due_today"
+    if days_ahead == 1:
+        return "due_tomorrow"
+    if days_ahead <= 3:
+        return "due_within_3_days"
+    return "due_later"
 
 
 def _find_repo_root(start: Path) -> Path:
@@ -219,6 +257,7 @@ class AssignmentActionPlan:
     course_name: str
     due_date: str | None
     urgency: Urgency
+    date_urgency: DateUrgency
     requirement_source: str
     requirements: list[RequirementPlan] = field(default_factory=list)
     missing_information: list[MissingInformation] = field(default_factory=list)
@@ -291,9 +330,10 @@ def plan_for_assignment(
     fetch_documents_for_resource) — this function never queries the
     database itself and never talks to MCP; it only reasons over what it's
     given, plus the two bounded local-evidence sources above."""
-    now = now or datetime.now()
+    now = now or datetime.utcnow()  # due_date is stored naive-UTC — see storage/timezones.py
     related_documents = related_documents or []
     urgency = classify_urgency(assignment.due_date, now=now)
+    date_urgency = classify_date_urgency(assignment.due_date, now=now)
     requirement_phrases, requirement_source = extract_requirements(assignment)
 
     requirements = [
@@ -330,8 +370,9 @@ def plan_for_assignment(
     return AssignmentActionPlan(
         assignment_name=assignment.name,
         course_name=course.name,
-        due_date=assignment.due_date.isoformat() if assignment.due_date else None,
+        due_date=to_ist_isoformat(assignment.due_date),
         urgency=urgency,
+        date_urgency=date_urgency,
         requirement_source=requirement_source,
         requirements=requirements,
         missing_information=missing_information,
@@ -385,16 +426,18 @@ def render_plan(plan: AssignmentActionPlan) -> str:
 class AssignmentAction:
     assignment: Assignment
     urgency: Urgency
+    date_urgency: DateUrgency
     recommendation: str
 
 
 def plan_actions(assignments: list[Assignment], *, now: datetime | None = None) -> list[AssignmentAction]:
     """Rank assignments by urgency and attach a plain-language recommendation."""
-    now = now or datetime.now()
+    now = now or datetime.utcnow()  # due_date is stored naive-UTC — see storage/timezones.py
     actions = [
         AssignmentAction(
             assignment=a,
             urgency=(urgency := classify_urgency(a.due_date, now=now)),
+            date_urgency=classify_date_urgency(a.due_date, now=now),
             recommendation=_RECOMMENDATION[urgency],
         )
         for a in assignments
@@ -409,7 +452,8 @@ def summarize_plan(actions: list[AssignmentAction], *, limit: int = 5) -> str:
 
     lines = []
     for i, item in enumerate(actions[:limit], start=1):
-        due = item.assignment.due_date.strftime("%b %d, %I:%M %p") if item.assignment.due_date else "no due date"
+        due_ist = to_ist_aware(item.assignment.due_date)
+        due = due_ist.strftime("%b %d, %I:%M %p") if due_ist else "no due date"
         lines.append(f"{i}. **{item.assignment.name}** — {due} — {item.recommendation}")
 
     if len(actions) > limit:

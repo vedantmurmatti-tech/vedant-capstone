@@ -27,6 +27,34 @@ import type {
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
+// Multi-user foundation (see BUILD_LOG.md) — this is a DEV-ONLY identity
+// mechanism (see backend/api/auth.py's own docstring for exactly what it
+// does and doesn't guarantee), not real authentication. A plain,
+// per-browser localStorage value that every apiFetch call sends as
+// X-Esmerelda-User-Id; the backend creates the user the first time a
+// given id is seen. No selection UI exists yet beyond
+// getCurrentUserId()/setCurrentUserId() below — omitted, the backend
+// falls back to one shared demo user, exactly matching every pre-
+// multi-user request this app already made.
+const USER_ID_STORAGE_KEY = "esmerelda_user_id";
+
+export function getCurrentUserId(): string | null {
+  try {
+    return localStorage.getItem(USER_ID_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setCurrentUserId(userId: string | number): void {
+  try {
+    localStorage.setItem(USER_ID_STORAGE_KEY, String(userId));
+  } catch {
+    // localStorage unavailable (private browsing, blocked site data) —
+    // requests simply fall back to the shared demo user server-side.
+  }
+}
+
 export class ApiError extends Error {
   status: number;
 
@@ -39,9 +67,13 @@ export class ApiError extends Error {
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response;
+  const userId = getCurrentUserId();
   try {
     res = await fetch(`${API_BASE}/api${path}`, {
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(userId ? { "X-Esmerelda-User-Id": userId } : {}),
+      },
       ...init,
     });
   } catch {
@@ -101,7 +133,52 @@ export async function getDocuments(): Promise<DocumentFile[]> {
 }
 
 export function getDocumentDownloadUrl(document: DocumentFile): string {
-  return `${API_BASE}${document.downloadUrl}`;
+  // A plain <a href> link, not an apiFetch call — can't carry the
+  // X-Esmerelda-User-Id header, so the user id is appended as
+  // ?userId= instead (backend/api/auth.py's get_current_user_id()
+  // accepts either).
+  const userId = getCurrentUserId();
+  const base = `${API_BASE}${document.downloadUrl}`;
+  return userId ? `${base}?userId=${encodeURIComponent(userId)}` : base;
+}
+
+export async function getCurrentUser(): Promise<{
+  id: number;
+  email: string;
+  displayName: string | null;
+  moodleSessionStatus: string | null;
+}> {
+  return apiFetch("/users/me");
+}
+
+export async function createUser(
+  email: string,
+  displayName?: string
+): Promise<{ id: number; email: string; displayName: string | null; moodleSessionStatus: string | null }> {
+  const params = new URLSearchParams({ email });
+  if (displayName) params.set("display_name", displayName);
+  return apiFetch(`/users?${params.toString()}`, { method: "POST" });
+}
+
+export async function getMoodleSessionStatus(): Promise<{
+  status: "connected" | "expired" | "never_connected";
+  checkedAt: string | null;
+}> {
+  return apiFetch("/moodle/session-status");
+}
+
+export async function connectMoodle(): Promise<{
+  status: "connected" | "expired" | "never_connected";
+  checkedAt: string | null;
+}> {
+  return apiFetch("/moodle/connect", { method: "POST" });
+}
+
+export async function disconnectMoodle(): Promise<{
+  status: "connected" | "expired" | "never_connected";
+  checkedAt: string | null;
+}> {
+  return apiFetch("/moodle/disconnect", { method: "POST" });
 }
 
 export async function getMoodleSyncStatus(): Promise<MoodleSyncStatus> {

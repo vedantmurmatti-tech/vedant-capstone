@@ -79,6 +79,25 @@ class SyncTriggerOut(BaseModel):
     state: str
 
 
+class UserOut(BaseModel):
+    """An Esmerelda user (see storage/models.py's User and api/auth.py's
+    explicit dev-only identification mechanism — NOT production auth)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: int
+    email: str
+    displayName: str | None = None
+    moodleSessionStatus: str | None = None
+
+
+class MoodleSessionStatusOut(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    status: Literal["connected", "expired", "never_connected"]
+    checkedAt: datetime | None = None
+
+
 class ProactiveNotificationOut(BaseModel):
     """One concise, real, non-fabricated academic notice (see
     api/notifications.py) — always derived from actual stored Moodle data

@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from storage.models import Assignment, Course, Document, DocumentVersion, Resource, SyncRun
+from storage.timezones import to_ist_aware
 
 from .presenters import derive_file_type, derive_short_name
 from .schemas import AssignmentOut, CourseOut, DocumentOut, ResourceOut, SyncStatusOut
@@ -40,7 +41,7 @@ def assignment_out(assignment: Assignment, course: Course) -> AssignmentOut:
         courseShortName=course.short_name or derive_short_name(course.name),
         name=assignment.name,
         description=assignment.description,
-        dueDate=assignment.due_date,
+        dueDate=to_ist_aware(assignment.due_date),
         submissionUrl=assignment.submission_url,
         submissionStatus=assignment.submission_status,
     )
@@ -88,50 +89,71 @@ def document_out(document: Document, course: Course | None, updated_at: datetime
 # --- queries ---------------------------------------------------------------
 
 
-def fetch_courses(db: Session) -> list[Course]:
-    return db.query(Course).order_by(Course.name).all()
+def fetch_courses(db: Session, user_id: int) -> list[Course]:
+    return db.query(Course).filter(Course.user_id == user_id).order_by(Course.name).all()
 
 
-def fetch_course(db: Session, course_id: int) -> Course | None:
-    return db.get(Course, course_id)
+def fetch_course(db: Session, course_id: int, user_id: int) -> Course | None:
+    """Scoped by user_id, not just primary key — a bare db.get(Course, id)
+    would let any authenticated user fetch any OTHER user's course just by
+    guessing/incrementing the id in a URL. Returns None (the route then
+    404s, same as "doesn't exist") for a real course id that belongs to a
+    different user, indistinguishable from it genuinely not existing —
+    deliberately, so this can't be used to enumerate other users' course
+    ids either."""
+    return db.scalar(select(Course).where(Course.id == course_id, Course.user_id == user_id))
 
 
-def fetch_course_assignments(db: Session, course_id: int) -> list[Assignment]:
+def fetch_course_assignments(db: Session, course_id: int, user_id: int) -> list[Assignment]:
     return (
         db.query(Assignment)
-        .filter(Assignment.course_id == course_id)
+        .filter(Assignment.course_id == course_id, Assignment.user_id == user_id)
         .order_by(Assignment.due_date.is_(None), Assignment.due_date)
         .all()
     )
 
 
-def fetch_course_resources(db: Session, course_id: int) -> list[Resource]:
-    return db.query(Resource).filter(Resource.course_id == course_id).order_by(Resource.name).all()
+def fetch_course_resources(db: Session, course_id: int, user_id: int) -> list[Resource]:
+    return (
+        db.query(Resource)
+        .filter(Resource.course_id == course_id, Resource.user_id == user_id)
+        .order_by(Resource.name)
+        .all()
+    )
 
 
-def fetch_resource_by_moodle_id(db: Session, moodle_id: str) -> Resource | None:
+def fetch_resource_by_moodle_id(db: Session, moodle_id: str, user_id: int) -> Resource | None:
     """content_radar.py gives an assignment's own Moodle activity link a
     Resource row sharing the same moodle_id as the Assignment — this is
     the real, reliable join between the two tables, used by the
     assignment-action-planner Skill to find an assignment's own resource
-    entry (and, from there, any document downloaded for it)."""
-    return db.scalar(select(Resource).where(Resource.moodle_id == moodle_id))
+    entry (and, from there, any document downloaded for it). Scoped by
+    user_id since moodle_id is only unique WITHIN one user's synced data
+    (two users can share the same real Moodle course/resource id)."""
+    return db.scalar(
+        select(Resource).where(Resource.moodle_id == moodle_id, Resource.user_id == user_id)
+    )
 
 
-def fetch_documents_for_resource(db: Session, resource_id: int) -> list[Document]:
-    return db.query(Document).filter(Document.resource_id == resource_id).all()
+def fetch_documents_for_resource(db: Session, resource_id: int, user_id: int) -> list[Document]:
+    return (
+        db.query(Document)
+        .filter(Document.resource_id == resource_id, Document.user_id == user_id)
+        .all()
+    )
 
 
-def fetch_all_assignments(db: Session) -> list[tuple[Assignment, Course]]:
+def fetch_all_assignments(db: Session, user_id: int) -> list[tuple[Assignment, Course]]:
     return (
         db.query(Assignment, Course)
         .join(Course, Assignment.course_id == Course.id)
+        .filter(Assignment.user_id == user_id)
         .order_by(Assignment.due_date.is_(None), Assignment.due_date)
         .all()
     )
 
 
-def fetch_all_documents(db: Session) -> list[DocumentRow]:
+def fetch_all_documents(db: Session, user_id: int) -> list[DocumentRow]:
     latest_version = (
         db.query(
             DocumentVersion.document_id.label("document_id"),
@@ -143,6 +165,7 @@ def fetch_all_documents(db: Session) -> list[DocumentRow]:
 
     return (
         db.query(Document, Resource, Course, latest_version.c.latest_at)
+        .filter(Document.user_id == user_id)
         .outerjoin(Resource, Document.resource_id == Resource.id)
         .outerjoin(Course, Resource.course_id == Course.id)
         .outerjoin(latest_version, latest_version.c.document_id == Document.id)
@@ -151,14 +174,16 @@ def fetch_all_documents(db: Session) -> list[DocumentRow]:
     )
 
 
-def fetch_document(db: Session, document_id: int) -> Document | None:
-    return db.get(Document, document_id)
+def fetch_document(db: Session, document_id: int, user_id: int) -> Document | None:
+    return db.scalar(select(Document).where(Document.id == document_id, Document.user_id == user_id))
 
 
-def fetch_sync_status(db: Session) -> SyncStatusOut:
-    courses_count = db.query(func.count(Course.id)).scalar() or 0
+def fetch_sync_status(db: Session, user_id: int) -> SyncStatusOut:
+    courses_count = db.query(func.count(Course.id)).filter(Course.user_id == user_id).scalar() or 0
     try:
-        latest_run = db.scalar(select(SyncRun).order_by(SyncRun.id.desc()))
+        latest_run = db.scalar(
+            select(SyncRun).where(SyncRun.user_id == user_id).order_by(SyncRun.id.desc())
+        )
     except ValueError:
         # A malformed (non-null but unparseable) started_at/finished_at on
         # the latest row makes SQLAlchemy's own typed DateTime column
@@ -180,7 +205,12 @@ def fetch_sync_status(db: Session) -> SyncStatusOut:
         # on this database — fall back to the pre-sync-pipeline heuristic (a document
         # having been downloaded at some point) so an existing, already-populated local
         # database doesn't regress to "stale" the moment this code ships.
-        last_synced_at = db.query(func.max(DocumentVersion.created_at)).scalar()
+        last_synced_at = (
+            db.query(func.max(DocumentVersion.created_at))
+            .join(Document, DocumentVersion.document_id == Document.id)
+            .filter(Document.user_id == user_id)
+            .scalar()
+        )
         return SyncStatusOut(
             state="synced" if last_synced_at else "stale",
             lastSyncedAt=last_synced_at,
@@ -227,7 +257,9 @@ def fetch_sync_status(db: Session) -> SyncStatusOut:
         state = "synced"
 
     last_success = db.scalar(
-        select(SyncRun).where(SyncRun.status == "success").order_by(SyncRun.id.desc())
+        select(SyncRun)
+        .where(SyncRun.status == "success", SyncRun.user_id == user_id)
+        .order_by(SyncRun.id.desc())
     )
     return SyncStatusOut(
         state=state,
@@ -237,9 +269,9 @@ def fetch_sync_status(db: Session) -> SyncStatusOut:
     )
 
 
-def fetch_dashboard_counts(db: Session) -> tuple[int, int, int, int]:
-    courses_count = db.query(func.count(Course.id)).scalar() or 0
-    assignments_count = db.query(func.count(Assignment.id)).scalar() or 0
-    resources_count = db.query(func.count(Resource.id)).scalar() or 0
-    documents_count = db.query(func.count(Document.id)).scalar() or 0
+def fetch_dashboard_counts(db: Session, user_id: int) -> tuple[int, int, int, int]:
+    courses_count = db.query(func.count(Course.id)).filter(Course.user_id == user_id).scalar() or 0
+    assignments_count = db.query(func.count(Assignment.id)).filter(Assignment.user_id == user_id).scalar() or 0
+    resources_count = db.query(func.count(Resource.id)).filter(Resource.user_id == user_id).scalar() or 0
+    documents_count = db.query(func.count(Document.id)).filter(Document.user_id == user_id).scalar() or 0
     return courses_count, assignments_count, resources_count, documents_count

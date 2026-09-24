@@ -194,7 +194,7 @@ _MAX_HISTORY_MESSAGES = 12
 
 
 async def handle_chat_message_groq(
-    db: Session, message: str, history: list[dict[str, str]] | None = None
+    db: Session, message: str, user_id: int, history: list[dict[str, str]] | None = None
 ) -> ChatResponseOut:
     try:
         client = _get_client()
@@ -206,7 +206,7 @@ async def handle_chat_message_groq(
 
     collector = ToolCollector()
     call_log = McpCallLog()
-    python_tools = build_tools(db, collector)
+    python_tools = build_tools(db, collector, user_id)
 
     async def create_completion(messages: list[dict[str, Any]], tool_defs: list[dict[str, Any]]):
         # Any tool result (including search_document_content's real,
@@ -238,7 +238,7 @@ async def handle_chat_message_groq(
     messages.append({"role": "user", "content": message})
 
     try:
-        async with sqlite_mcp_session(call_log) as session:
+        async with sqlite_mcp_session(call_log, user_id) as session:
             mcp_tools = (await session.list_tools()).tools
             dispatch = build_dispatch(python_tools, mcp_tools)
             tool_defs = python_tool_defs(python_tools) + mcp_tool_defs(mcp_tools)

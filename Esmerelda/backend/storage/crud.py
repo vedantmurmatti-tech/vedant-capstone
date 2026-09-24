@@ -1,3 +1,4 @@
+import contextvars
 import json
 import logging
 import os
@@ -12,23 +13,85 @@ from .models import SyncRun
 
 logger = logging.getLogger("esmerelda.sync")
 
+# Ambient, request/task-scoped fallback for save_course()/save_assignment()/
+# save_resource()/save_document()'s `user_id` parameter — see
+# moodle/sync_service.py's run_sync(), which sets this for the duration of
+# one sync. Why this exists instead of threading an explicit `user_id`
+# parameter through every one of sync_service.py's ~15 nested scraping
+# helper functions (_sync_course_resources, _scan_page_for_resources,
+# _sync_course_assignments, _fetch_assignment_page_details, and
+# moodle/document_downloader.py's sync_resource_documents, several calls
+# deep): that scraper is large, delicate, and already extensively tested
+# end-to-end (tests/test_sync_service.py etc.) — rewriting every nested
+# function signature to pass one more parameter through, purely for this,
+# is exactly the kind of invasive change Part 3-9's "do not redesign
+# working systems" / "smallest fix" guidance rules out, and multiplies the
+# real risk of introducing an unrelated regression in code this task was
+# explicitly told not to touch beyond what's "absolutely necessary".
+# contextvars.ContextVar is the standard tool for exactly this shape of
+# problem — ambient, call-stack-scoped context that doesn't require
+# threading an explicit parameter through every intermediate frame — and
+# is async-task-safe (each asyncio Task/thread gets its own value), which
+# matters since this call stack runs inside a FastAPI BackgroundTasks
+# callback. A caller that explicitly passes `user_id=` (as every direct
+# save_*() call in sync_service.py's OWN top-level code already does)
+# always wins; this is purely a fallback for calls that don't.
+_current_sync_user_id: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "_current_sync_user_id", default=None
+)
+
+
+def _resolve_user_id(explicit: int | None) -> int | None:
+    return explicit if explicit is not None else _current_sync_user_id.get()
+
+
+from contextlib import contextmanager
+
+
+@contextmanager
+def sync_user_scope(user_id: int | None):
+    """Sets the ambient user_id every save_*() call in this module falls
+    back to for the duration of the `with` block — see
+    _current_sync_user_id's docstring above. moodle/sync_service.py's
+    run_sync() wraps its entire sync in this, once, at the top."""
+    token = _current_sync_user_id.set(user_id)
+    try:
+        yield
+    finally:
+        _current_sync_user_id.reset(token)
+
 def save_course(
     moodle_id: str,
     name: str,
     short_name: str | None = None,
-    description: str | None = None
+    description: str | None = None,
+    user_id: int | None = None,
 ):
+    """user_id scopes both the lookup and the created row to one Esmerelda
+    user — two users independently syncing the SAME real Moodle course
+    each get their own Course row (a real Moodle course id is unique
+    within one Moodle instance, but not necessarily unique ACROSS this
+    app's users, since two students can share the same course), so
+    neither can see or overwrite the other's synced data. user_id=None
+    (the pre-multi-user default) preserves the old global-lookup
+    behavior — used only by the legacy single-account dev/demo sync path
+    (see BUILD_LOG.md's multi-user foundation entry). See
+    _resolve_user_id()'s docstring above for the contextvar fallback this
+    uses when the caller doesn't pass one explicitly."""
+    user_id = _resolve_user_id(user_id)
     with SessionLocal() as session:
-        course = session.scalar(
-            select(Course).where(Course.moodle_id == moodle_id)
-        )
+        query = select(Course).where(Course.moodle_id == moodle_id)
+        if user_id is not None:
+            query = query.where(Course.user_id == user_id)
+        course = session.scalar(query)
 
         if course is None:
             course = Course(
                 moodle_id=moodle_id,
                 name=name,
                 short_name=short_name,
-                description=description
+                description=description,
+                user_id=user_id,
             )
             session.add(course)
         else:
@@ -61,6 +124,7 @@ def save_assignment(
     course_moodle_id: str | None = None,
     assignment_url: str | None = None,
     description: str | None = None,
+    user_id: int | None = None,
 ):
     """Upserts an assignment by its stable Moodle activity id.
 
@@ -70,48 +134,58 @@ def save_assignment(
     exact-match Course.name for trivial reasons — whitespace, HTML
     entities, a course being renamed). `course_name` is used only as a
     fallback when no stable id is available or the id lookup misses.
+
+    user_id scopes every lookup (course AND assignment) and the created
+    row to one Esmerelda user — see save_course()'s docstring for why,
+    including the contextvar fallback when not passed explicitly.
     """
+    user_id = _resolve_user_id(user_id)
     with SessionLocal() as session:
         course = None
         lookup_method = None
 
         if course_moodle_id:
-            course = session.scalar(
-                select(Course).where(Course.moodle_id == course_moodle_id)
-            )
+            query = select(Course).where(Course.moodle_id == course_moodle_id)
+            if user_id is not None:
+                query = query.where(Course.user_id == user_id)
+            course = session.scalar(query)
             if course is not None:
                 lookup_method = "moodle_id"
 
         if course is None and course_name:
-            course = session.scalar(
-                select(Course).where(Course.name == course_name)
-            )
+            query = select(Course).where(Course.name == course_name)
+            if user_id is not None:
+                query = query.where(Course.user_id == user_id)
+            course = session.scalar(query)
             if course is not None:
                 lookup_method = "name"
 
         if course is None:
+            available_query = select(Course)
+            if user_id is not None:
+                available_query = available_query.where(Course.user_id == user_id)
             available = [
                 (c.moodle_id, c.name)
-                for c in session.scalars(select(Course)).all()
+                for c in session.scalars(available_query).all()
             ]
             print(
                 f"Course not found for assignment: name={name!r} "
                 f"moodle_id={moodle_id!r} course_moodle_id={course_moodle_id!r} "
                 f"course_name={course_name!r} assignment_url={assignment_url!r} "
-                f"available_courses={available}"
+                f"user_id={user_id!r} available_courses={available}"
             )
             return None
 
-        assignment = session.scalar(
-            select(Assignment).where(
-                Assignment.moodle_id == moodle_id
-            )
-        )
+        assignment_query = select(Assignment).where(Assignment.moodle_id == moodle_id)
+        if user_id is not None:
+            assignment_query = assignment_query.where(Assignment.user_id == user_id)
+        assignment = session.scalar(assignment_query)
 
         if assignment is None:
             assignment = Assignment(
                 moodle_id=moodle_id,
                 course_id=course.id,
+                user_id=user_id,
                 name=name,
                 submission_url=submission_url,
                 due_date=due_date,
@@ -159,47 +233,57 @@ def save_resource(
     url: str | None = None,
     description: str | None = None,
     course_moodle_id: str | None = None,
+    user_id: int | None = None,
 ):
+    """user_id scopes every lookup and the created row to one Esmerelda
+    user — see save_course()'s docstring for why, including the
+    contextvar fallback when not passed explicitly."""
+    user_id = _resolve_user_id(user_id)
     with SessionLocal() as session:
         course = None
         lookup_method = None
 
         if course_moodle_id:
-            course = session.scalar(
-                select(Course).where(Course.moodle_id == course_moodle_id)
-            )
+            query = select(Course).where(Course.moodle_id == course_moodle_id)
+            if user_id is not None:
+                query = query.where(Course.user_id == user_id)
+            course = session.scalar(query)
             if course is not None:
                 lookup_method = "moodle_id"
 
         if course is None and course_name:
-            course = session.scalar(
-                select(Course).where(Course.name == course_name)
-            )
+            query = select(Course).where(Course.name == course_name)
+            if user_id is not None:
+                query = query.where(Course.user_id == user_id)
+            course = session.scalar(query)
             if course is not None:
                 lookup_method = "name"
 
         if course is None:
+            available_query = select(Course)
+            if user_id is not None:
+                available_query = available_query.where(Course.user_id == user_id)
             available = [
                 (c.moodle_id, c.name)
-                for c in session.scalars(select(Course)).all()
+                for c in session.scalars(available_query).all()
             ]
             print(
                 f"Course not found for resource: name={name!r} moodle_id={moodle_id!r} "
                 f"course_moodle_id={course_moodle_id!r} course_name={course_name!r} "
-                f"url={url!r} available_courses={available}"
+                f"url={url!r} user_id={user_id!r} available_courses={available}"
             )
             return None
 
-        resource = session.scalar(
-            select(Resource).where(
-                Resource.moodle_id == moodle_id
-            )
-        )
+        resource_query = select(Resource).where(Resource.moodle_id == moodle_id)
+        if user_id is not None:
+            resource_query = resource_query.where(Resource.user_id == user_id)
+        resource = session.scalar(resource_query)
 
         if resource is None:
             resource = Resource(
                 moodle_id=moodle_id,
                 course_id=course.id,
+                user_id=user_id,
                 name=name,
                 resource_type=resource_type,
                 url=url,
@@ -235,11 +319,17 @@ def save_document(
     resource_id: int | None = None,
     file_type: str | None = None,
     extracted_text: str | None = None,
+    user_id: int | None = None,
 ):
+    """user_id scopes the lookup and the created row to one Esmerelda
+    user — see save_course()'s docstring for why, including the
+    contextvar fallback when not passed explicitly."""
+    user_id = _resolve_user_id(user_id)
     with SessionLocal() as session:
-        document = session.query(Document).filter(
-            Document.file_path == file_path
-        ).first()
+        query = session.query(Document).filter(Document.file_path == file_path)
+        if user_id is not None:
+            query = query.filter(Document.user_id == user_id)
+        document = query.first()
 
         if document is None:
             document = Document(
@@ -249,6 +339,7 @@ def save_document(
                 current_hash=file_hash,
                 resource_id=resource_id,
                 extracted_text=extracted_text,
+                user_id=user_id,
             )
 
             session.add(document)
@@ -357,7 +448,7 @@ def _parse_started_at(raw) -> datetime | None:
         return None
 
 
-def get_running_sync_run() -> SyncRun | None:
+def get_running_sync_run(user_id: int | None = None) -> SyncRun | None:
     """Used to reject a new sync trigger while one is already in progress
     (see api/routes.py's POST /api/sync/moodle) — prevents two concurrent
     Playwright sessions from racing over the same Moodle login/profile.
@@ -381,10 +472,21 @@ def get_running_sync_run() -> SyncRun | None:
     which would crash this whole function before it ever got a chance to
     treat that same problem as "stale, heal it." The full ORM object is
     only ever fetched (via session.get(), by primary key) once the raw
-    value has already been confirmed parseable."""
+    value has already been confirmed parseable.
+
+    user_id (Part 9, sync isolation — see BUILD_LOG.md's multi-user
+    foundation entry) scopes this to one Esmerelda user's own sync runs,
+    via SQLite's NULL-safe `IS` operator (so user_id=None correctly
+    matches only legacy rows with a NULL user_id, not every user's rows)
+    — one user's sync being stuck "running" never blocks another user's
+    sync from starting."""
     with SessionLocal() as session:
         row = session.execute(
-            text("SELECT id, started_at FROM sync_runs WHERE status = 'running' ORDER BY id DESC LIMIT 1")
+            text(
+                "SELECT id, started_at FROM sync_runs WHERE status = 'running' AND user_id IS :user_id "
+                "ORDER BY id DESC LIMIT 1"
+            ),
+            {"user_id": user_id},
         ).first()
         if row is None:
             return None
@@ -443,9 +545,9 @@ def get_running_sync_run() -> SyncRun | None:
         return run
 
 
-def create_sync_run() -> SyncRun:
+def create_sync_run(user_id: int | None = None) -> SyncRun:
     with SessionLocal() as session:
-        run = SyncRun(status="running")
+        run = SyncRun(status="running", user_id=user_id)
         session.add(run)
         session.commit()
         session.refresh(run)
@@ -453,7 +555,7 @@ def create_sync_run() -> SyncRun:
         return run
 
 
-def try_start_new_sync_run() -> SyncRun | None:
+def try_start_new_sync_run(user_id: int | None = None) -> SyncRun | None:
     """Atomically checks for an already-running (non-stale) sync AND
     creates a new "running" row, as a single SQL statement — closes a
     real race that existed in api/routes.py's POST /api/sync/moodle
@@ -477,7 +579,13 @@ def try_start_new_sync_run() -> SyncRun | None:
     without that separate step needing to itself be race-free.
 
     Returns the newly created SyncRun, or None if a genuinely active
-    sync already exists and nothing was created."""
+    sync already exists and nothing was created.
+
+    user_id (Part 9, sync isolation) scopes the "is one already running"
+    check, the new row, and the housekeeping cleanup below to one
+    Esmerelda user — via SQLite's NULL-safe `IS` operator, same as
+    get_running_sync_run() above — so two users' syncs are fully
+    independent races, never blocking or superseding each other."""
     threshold_minutes = _get_stale_sync_run_minutes()
     stale_cutoff = datetime.utcnow() - timedelta(minutes=threshold_minutes)
     now = datetime.utcnow()
@@ -485,39 +593,48 @@ def try_start_new_sync_run() -> SyncRun | None:
     with SessionLocal() as session:
         result = session.execute(
             text(
-                "INSERT INTO sync_runs (status, started_at, courses_synced, assignments_synced, resources_synced) "
-                "SELECT 'running', :now, 0, 0, 0 "
+                "INSERT INTO sync_runs (status, started_at, courses_synced, assignments_synced, resources_synced, user_id) "
+                "SELECT 'running', :now, 0, 0, 0, :user_id "
                 "WHERE NOT EXISTS ("
                 "  SELECT 1 FROM sync_runs "
-                "  WHERE status = 'running' AND started_at IS NOT NULL AND started_at > :stale_cutoff"
+                "  WHERE status = 'running' AND started_at IS NOT NULL AND started_at > :stale_cutoff "
+                "  AND user_id IS :user_id"
                 ")"
             ),
-            {"now": now, "stale_cutoff": stale_cutoff},
+            {"now": now, "stale_cutoff": stale_cutoff, "user_id": user_id},
         )
         if result.rowcount == 0:
             session.rollback()
             return None
 
         # Best-effort housekeeping in the same transaction: any other
-        # "running" row still around at this point is necessarily one
-        # that didn't block the insert above (either stale or missing a
-        # timestamp) — rewritten to "error" so it doesn't linger
-        # indefinitely as a confusing "running" row in sync history, now
-        # that a new run has taken over. Not required for correctness
-        # (the new row above is already the one fetch_sync_status() and
-        # future calls to this function will see), purely for tidiness.
+        # "running" row still around for THIS SAME user at this point is
+        # necessarily one that didn't block the insert above (either
+        # stale or missing a timestamp) — rewritten to "error" so it
+        # doesn't linger indefinitely as a confusing "running" row in
+        # sync history, now that a new run has taken over. Not required
+        # for correctness (the new row above is already the one
+        # fetch_sync_status() and future calls to this function will
+        # see), purely for tidiness. Scoped to this user's own latest
+        # row (not a global MAX(id)) so it can never touch another
+        # user's sync history.
         session.execute(
             text(
                 "UPDATE sync_runs SET status = 'error', finished_at = :now, "
                 "error_message = 'Sync run abandoned: superseded by a newer sync after exceeding the "
                 f"{threshold_minutes}-minute staleness threshold (or having a missing/invalid started_at).' "
-                "WHERE status = 'running' AND id != (SELECT id FROM sync_runs ORDER BY id DESC LIMIT 1)"
+                "WHERE status = 'running' AND user_id IS :user_id "
+                "AND id != (SELECT id FROM sync_runs WHERE user_id IS :user_id ORDER BY id DESC LIMIT 1)"
             ),
-            {"now": now},
+            {"now": now, "user_id": user_id},
         )
         session.commit()
 
-        run = session.scalar(select(SyncRun).order_by(SyncRun.id.desc()))
+        run = session.scalar(
+            select(SyncRun).where(SyncRun.user_id == user_id).order_by(SyncRun.id.desc())
+            if user_id is not None
+            else select(SyncRun).where(SyncRun.user_id.is_(None)).order_by(SyncRun.id.desc())
+        )
         session.expunge(run)
         return run
 
@@ -544,30 +661,31 @@ def finish_sync_run(
         session.commit()
 
 
-def get_latest_sync_run() -> SyncRun | None:
+def get_latest_sync_run(user_id: int | None = None) -> SyncRun | None:
     with SessionLocal() as session:
-        run = session.scalar(
-            select(SyncRun).order_by(SyncRun.id.desc())
-        )
+        query = select(SyncRun).order_by(SyncRun.id.desc())
+        if user_id is not None:
+            query = query.where(SyncRun.user_id == user_id)
+        run = session.scalar(query)
         if run is not None:
             session.expunge(run)
         return run
 
 
-def get_last_two_successful_sync_runs() -> list[SyncRun]:
-    """The two most recent status="success" SyncRun rows, newest first —
-    used only to report an honest "N new items since last sync" signal
-    (see api/queries.py's fetch_new_items_since_last_sync) by comparing
-    their already-stored courses_synced/assignments_synced/resources_synced
-    counts. Returns fewer than 2 rows (possibly none) if there aren't
-    that many successful syncs yet — callers must handle that, not assume
-    a comparison is always possible."""
+def get_last_two_successful_sync_runs(user_id: int | None = None) -> list[SyncRun]:
+    """The two most recent status="success" SyncRun rows for one user,
+    newest first — used only to report an honest "N new items since last
+    sync" signal (see api/queries.py's fetch_new_items_since_last_sync) by
+    comparing their already-stored
+    courses_synced/assignments_synced/resources_synced counts. Returns
+    fewer than 2 rows (possibly none) if there aren't that many successful
+    syncs yet — callers must handle that, not assume a comparison is
+    always possible."""
     with SessionLocal() as session:
-        runs = list(
-            session.scalars(
-                select(SyncRun).where(SyncRun.status == "success").order_by(SyncRun.id.desc()).limit(2)
-            )
-        )
+        query = select(SyncRun).where(SyncRun.status == "success")
+        if user_id is not None:
+            query = query.where(SyncRun.user_id == user_id)
+        runs = list(session.scalars(query.order_by(SyncRun.id.desc()).limit(2)))
         for run in runs:
             session.expunge(run)
         return runs

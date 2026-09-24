@@ -78,22 +78,24 @@ def _run(script: str, timeout: int = 30) -> subprocess.CompletedProcess:
 _SEED_SCRIPT = """
 from datetime import datetime
 from storage.database import init_db, SessionLocal
+from api.auth import get_or_create_demo_user
 from storage.models import Course, Assignment
 from storage.crud import save_course, save_assignment
 init_db()
+_user_id = get_or_create_demo_user()
 
-save_course(moodle_id="24444", name="DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear")
-save_course(moodle_id="24443", name="DESG310-UGSEM5A-2026/27S1-Game Design")
+save_course(moodle_id="24444", name="DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear", user_id=_user_id)
+save_course(moodle_id="24443", name="DESG310-UGSEM5A-2026/27S1-Game Design", user_id=_user_id)
 
 save_assignment(
     moodle_id="246561", course_name="DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
     name="Assessment 2: Custom Skill", course_moodle_id="24444",
-    due_date=datetime(2026, 9, 17, 23, 59),
+    due_date=datetime(2026, 9, 17, 23, 59), user_id=_user_id,
 )
 save_assignment(
     moodle_id="246658", course_name="DESG319-UGSEM5-2026/27S1-Introduction to Artificial Intelligence & Machine Lear",
     name="Assessment 3: MVP", course_moodle_id="24444",
-    due_date=datetime(2026, 9, 18, 23, 59),
+    due_date=datetime(2026, 9, 18, 23, 59), user_id=_user_id,
 )
 # DESG310 has no assignments at all — a genuine "none tracked" case, used
 # to prove the tool distinguishes this from the reported false-negative bug.
@@ -109,8 +111,9 @@ _MATCH_SCRIPT = f"""
 from storage.database import SessionLocal
 from api.queries import fetch_courses
 from api.matching import match_course
+from api.auth import get_or_create_demo_user
 with SessionLocal() as db:
-    courses = fetch_courses(db)
+    courses = fetch_courses(db, get_or_create_demo_user())
 
     by_full_name = match_course({_FULL_USER_QUERY!r}, courses)
     print(f"BY_FULL_NAME:{{by_full_name.moodle_id if by_full_name else None}}")
@@ -135,10 +138,11 @@ with SessionLocal() as db:
 _TOOL_SCRIPT = f"""
 from storage.database import SessionLocal
 from api.gemini_tools import build_tools, ToolCollector
+from api.auth import get_or_create_demo_user
 
 with SessionLocal() as db:
     collector = ToolCollector()
-    tools = {{t.__name__: t for t in build_tools(db, collector)}}
+    tools = {{t.__name__: t for t in build_tools(db, collector, get_or_create_demo_user())}}
     get_course_assignments = tools["get_course_assignments"]
 
     result = get_course_assignments({_FULL_USER_QUERY!r})
@@ -211,9 +215,12 @@ try:
         "RESULT_ASSIGNMENT_COUNT:2" in tool_proc.stdout,
     )
     check(
-        "9. CRITICAL: both returned assignments carry their real, correct due dates — not null/Unknown",
-        "ASSIGNMENT:Assessment 2: Custom Skill:2026-09-17T23:59:00" in tool_proc.stdout
-        and "ASSIGNMENT:Assessment 3: MVP:2026-09-18T23:59:00" in tool_proc.stdout,
+        "9. CRITICAL: both returned assignments carry their real, correct due dates — not null/Unknown "
+        "(IST-aware ISO strings, e.g. '+05:30' — the raw due_date passed into save_assignment() here is "
+        "now interpreted as naive-UTC, per storage/timezones.py's convention, and converted to IST for "
+        "display: 23:59 UTC -> 05:29 IST the next calendar day)",
+        "ASSIGNMENT:Assessment 2: Custom Skill:2026-09-18T05:29:00+05:30" in tool_proc.stdout
+        and "ASSIGNMENT:Assessment 3: MVP:2026-09-19T05:29:00+05:30" in tool_proc.stdout,
     )
     check(
         "10. A course that's real but genuinely has zero tracked assignments gets an honest, explicit "
@@ -230,7 +237,7 @@ try:
         "which becomes ChatResponseOut.assignments) is populated too, with real due dates — this is what "
         "makes the due date actually reach the UI's assignment cards, not just the model's own text reply",
         "COLLECTOR_ASSIGNMENT_COUNT:2" in tool_proc.stdout
-        and "COLLECTOR_DUE_DATE:2026-09-17 23:59:00" in tool_proc.stdout,
+        and "COLLECTOR_DUE_DATE:2026-09-18 05:29:00+05:30" in tool_proc.stdout,
     )
 except Exception as exc:
     check(f"0. get_course_assignments tool test failed unexpectedly: {exc}", False)
@@ -244,7 +251,7 @@ try:
     check(
         "14. The real GET /api/assignments HTTP JSON response carries the real due date end-to-end — "
         "confirms the API layer itself never loses or nulls out a real stored due date",
-        "API_ASSIGNMENT:Assessment 2: Custom Skill:2026-09-17T23:59:00" in api_proc.stdout,
+        "API_ASSIGNMENT:Assessment 2: Custom Skill:2026-09-18T05:29:00+05:30" in api_proc.stdout,
     )
 except Exception as exc:
     check(f"0. Real HTTP API test failed unexpectedly: {exc}", False)

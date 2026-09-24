@@ -58,19 +58,21 @@ from types import SimpleNamespace
 
 from storage.database import init_db, SessionLocal
 from storage.models import Course, Resource, Document
+from api.auth import get_or_create_demo_user
 
 init_db()
+_user_id = get_or_create_demo_user()
 
 # --- Seed real rows: two courses, three documents, only one relevant to
 # the test query, exactly like a real, mixed Knowledge Base. ---
 with SessionLocal() as session:
-    course_a = Course(moodle_id="1", name="DESG322 Service Design", short_name="DESG322")
-    course_b = Course(moodle_id="2", name="BUAN301 Statistics", short_name="BUAN301")
+    course_a = Course(moodle_id="1", name="DESG322 Service Design", short_name="DESG322", user_id=_user_id)
+    course_b = Course(moodle_id="2", name="BUAN301 Statistics", short_name="BUAN301", user_id=_user_id)
     session.add_all([course_a, course_b])
     session.flush()
 
-    resource_a = Resource(moodle_id="10", course_id=course_a.id, name="Project Brief", resource_type="PDF", url="https://x/brief.pdf")
-    resource_b = Resource(moodle_id="11", course_id=course_b.id, name="Formula Sheet", resource_type="PDF", url="https://x/formulas.pdf")
+    resource_a = Resource(moodle_id="10", course_id=course_a.id, name="Project Brief", resource_type="PDF", url="https://x/brief.pdf", user_id=_user_id)
+    resource_b = Resource(moodle_id="11", course_id=course_b.id, name="Formula Sheet", resource_type="PDF", url="https://x/formulas.pdf", user_id=_user_id)
     session.add_all([resource_a, resource_b])
     session.flush()
 
@@ -80,6 +82,7 @@ with SessionLocal() as session:
         file_type="PDF",
         current_hash="hash1",
         resource_id=resource_a.id,
+        user_id=_user_id,
         extracted_text=(
             "Service Design Project Brief. Students must conduct user research interviews with at "
             "least five participants, synthesize findings into a journey map, and prototype a service "
@@ -92,6 +95,7 @@ with SessionLocal() as session:
         file_type="PDF",
         current_hash="hash2",
         resource_id=resource_b.id,
+        user_id=_user_id,
         extracted_text="The standard deviation formula is the square root of the variance. Use it for hypothesis testing.",
     )
     doc_not_indexed = Document(
@@ -100,6 +104,7 @@ with SessionLocal() as session:
         file_type=None,
         current_hash="hash3",
         resource_id=None,
+        user_id=_user_id,
         extracted_text=None,
     )
     session.add_all([doc_relevant, doc_irrelevant, doc_not_indexed])
@@ -110,16 +115,16 @@ with SessionLocal() as session:
 from api import document_retrieval
 
 with SessionLocal() as session:
-    indexed = document_retrieval.count_indexed_documents(session)
+    indexed = document_retrieval.count_indexed_documents(session, _user_id)
     print(f"INDEXED_COUNT:{indexed}")
 
-    results = document_retrieval.search_documents(session, "what does the project brief say about user research")
+    results = document_retrieval.search_documents(session, "what does the project brief say about user research", _user_id)
     print(f"RESULT_COUNT:{len(results)}")
     for r in results:
         print(f"RESULT:{r.document_name}:{r.course_name}:{r.score}")
         print(f"RESULT_TEXT:{r.chunk_text}")
 
-    no_match = document_retrieval.search_documents(session, "xyzxyzxyz nonsense query with no real match")
+    no_match = document_retrieval.search_documents(session, "xyzxyzxyz nonsense query with no real match", _user_id)
     print(f"NO_MATCH_COUNT:{len(no_match)}")
 
 # --- 2. The real chat tool: search_document_content, via the real
@@ -129,7 +134,7 @@ from api.gemini_tools import ToolCollector, build_tools
 
 with SessionLocal() as session:
     collector = ToolCollector()
-    tools = build_tools(session, collector)
+    tools = build_tools(session, collector, _user_id)
     tool_by_name = {t.__name__: t for t in tools}
     tool_result = tool_by_name["search_document_content"]("What are the requirements in the project brief?")
     print(f"TOOL_RESULT:{json.dumps(tool_result)}")
@@ -158,7 +163,7 @@ def make_tool_call(call_id, name, arguments):
 
 with SessionLocal() as session:
     collector = ToolCollector()
-    tools = build_tools(session, collector)
+    tools = build_tools(session, collector, _user_id)
     dispatch = build_dispatch(tools, [])
 
     captured_messages_before_second_call = []

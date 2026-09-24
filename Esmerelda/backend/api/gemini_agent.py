@@ -115,7 +115,7 @@ _MAX_HISTORY_MESSAGES = 12
 
 
 async def handle_chat_message_gemini(
-    db: Session, message: str, history: list[dict[str, str]] | None = None
+    db: Session, message: str, user_id: int, history: list[dict[str, str]] | None = None
 ) -> ChatResponseOut:
     try:
         client = _get_client()
@@ -126,7 +126,7 @@ async def handle_chat_message_gemini(
 
     collector = ToolCollector()
     call_log = McpCallLog()
-    python_tools = build_tools(db, collector)
+    python_tools = build_tools(db, collector, user_id)
 
     async def run_chat(tools: list) -> str:
         try:
@@ -149,7 +149,7 @@ async def handle_chat_message_gemini(
         return response.text or "I don't have anything to say about that."
 
     try:
-        async with sqlite_mcp_session(call_log) as sqlite_session:
+        async with sqlite_mcp_session(call_log, user_id) as sqlite_session:
             reply_text = await run_chat([*python_tools, sqlite_session])
     except GeminiUnavailableError:
         raise  # a real Gemini failure — let the orchestrator fall back to the deterministic agent

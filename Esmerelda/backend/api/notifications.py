@@ -55,13 +55,14 @@ from .schemas import ProactiveNotificationOut
 _DUE_SOON_WINDOW = timedelta(hours=48)
 
 
-def _due_soon_notifications(db: Session) -> list[ProactiveNotificationOut]:
+def _due_soon_notifications(db: Session, user_id: int) -> list[ProactiveNotificationOut]:
     now = datetime.utcnow()
     cutoff = now + _DUE_SOON_WINDOW
 
     rows = db.execute(
         select(Assignment, Course)
         .join(Course, Assignment.course_id == Course.id)
+        .where(Assignment.user_id == user_id)
         .where(Assignment.due_date.is_not(None))
         .where(Assignment.due_date >= now)
         .where(Assignment.due_date <= cutoff)
@@ -86,14 +87,14 @@ def _due_soon_notifications(db: Session) -> list[ProactiveNotificationOut]:
     return notifications
 
 
-def compute_new_items_count() -> int | None:
+def compute_new_items_count(user_id: int) -> int | None:
     """None when there's no earlier successful sync to compare against yet
     (genuinely unknown — never reported as 0). Otherwise the sum of any
     positive growth in courses/assignments/resources between the two most
     recent successful syncs' own already-stored counts — the one place
     this delta is computed; both the dashboard summary's `newItemsCount`
     and this module's own "new_content" notification call this."""
-    runs = get_last_two_successful_sync_runs()
+    runs = get_last_two_successful_sync_runs(user_id)
     if len(runs) < 2:
         return None
     latest, previous = runs[0], runs[1]
@@ -104,11 +105,11 @@ def compute_new_items_count() -> int | None:
     )
 
 
-def _new_content_notification(db: Session) -> ProactiveNotificationOut | None:
-    runs = get_last_two_successful_sync_runs()
+def _new_content_notification(db: Session, user_id: int) -> ProactiveNotificationOut | None:
+    runs = get_last_two_successful_sync_runs(user_id)
     if len(runs) < 2:
         return None  # no earlier successful sync to compare against — genuinely unknown, not "zero"
-    delta = compute_new_items_count()
+    delta = compute_new_items_count(user_id)
     if not delta:
         return None
 
@@ -120,8 +121,10 @@ def _new_content_notification(db: Session) -> ProactiveNotificationOut | None:
     )
 
 
-def _sync_error_notification(db: Session) -> ProactiveNotificationOut | None:
-    latest_run = db.scalar(select(SyncRun).order_by(SyncRun.id.desc()))
+def _sync_error_notification(db: Session, user_id: int) -> ProactiveNotificationOut | None:
+    latest_run = db.scalar(
+        select(SyncRun).where(SyncRun.user_id == user_id).order_by(SyncRun.id.desc())
+    )
     if latest_run is None or latest_run.status != "error":
         return None
     return ProactiveNotificationOut(
@@ -131,15 +134,15 @@ def _sync_error_notification(db: Session) -> ProactiveNotificationOut | None:
     )
 
 
-def build_proactive_notifications(db: Session) -> list[ProactiveNotificationOut]:
+def build_proactive_notifications(db: Session, user_id: int) -> list[ProactiveNotificationOut]:
     """The one entry point this module exposes — called from
     api/routes.py's dashboard-summary endpoint. Reuses only real,
     already-stored data; never triggers a sync or scrapes anything itself."""
-    notifications = _due_soon_notifications(db)
-    new_content = _new_content_notification(db)
+    notifications = _due_soon_notifications(db, user_id)
+    new_content = _new_content_notification(db, user_id)
     if new_content:
         notifications.append(new_content)
-    sync_error = _sync_error_notification(db)
+    sync_error = _sync_error_notification(db, user_id)
     if sync_error:
         notifications.append(sync_error)
     return notifications
