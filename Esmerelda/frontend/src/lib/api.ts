@@ -52,7 +52,21 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!res.ok) {
-    throw new ApiError(`Request to ${path} failed with status ${res.status}`, res.status);
+    // Prefer the backend's own real detail message (every error response
+    // this API returns is `{"detail": "..."}` — see routes.py's
+    // HTTPException usages) over a generic "status N" — the same pattern
+    // `transcribeAudio()`/`synthesizeSpeech()` already use their own
+    // fetch calls for. Falls back to the generic message if the body
+    // isn't JSON, or has no `detail`, so this never throws a *worse*
+    // error than before this fix.
+    let message = `Request to ${path} failed with status ${res.status}`;
+    try {
+      const body = (await res.json()) as { detail?: string };
+      if (body?.detail) message = body.detail;
+    } catch {
+      // not JSON, or empty body — keep the generic status-based message
+    }
+    throw new ApiError(message, res.status);
   }
   return res.json() as Promise<T>;
 }
