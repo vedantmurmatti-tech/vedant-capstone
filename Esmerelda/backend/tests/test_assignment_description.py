@@ -104,6 +104,47 @@ _ASSIGNMENT_PAGE_NO_DUE_DATE = """
 </body></html>
 """
 
+# Real structures observed in a live Render sync's [DUE DATE TRACE] logs
+# against the actual lms.flame.edu.in (see BUILD_LOG.md's due-date-
+# structure-comparison entry) — not invented shapes:
+#
+# 1. "Group Documentation : Electronics and Form" (had a real submission
+#    on file) — its real captured raw text was exactly
+#    "Saturday, 12 September 2026, 1:59 PM\nTime remaining\tAssignment
+#    was submitted 12 hours 24 mins early\n", i.e. the due date sits
+#    INSIDE the submission-status table, right next to "Time remaining"
+#    and the submission-timing line — reproduced here as closely as
+#    real Moodle's own table markup would render it.
+_ASSIGNMENT_PAGE_DUE_DATE_IN_STATUS_TABLE = """
+<html><body>
+<table class="submissionstatustable">
+<tr><td>Submission status</td><td>Submitted for grading</td></tr>
+<tr><td>Grading status</td><td>Not graded</td></tr>
+<tr><td>Due date</td><td>Saturday, 12 September 2026, 1:59 PM</td></tr>
+<tr><td>Time remaining</td><td>Assignment was submitted 12 hours 24 mins early</td></tr>
+</table>
+</body></html>
+"""
+
+# 2. "Final EXAM PART B- Submission" (no submission on file) — its real
+#    captured page body genuinely contained no "Due date" text ANYWHERE
+#    (confirmed directly from the real log: "no \"Due date\" label found
+#    anywhere on the page — page_text length=1439"), even though a
+#    submission-status table WAS present. Reproduced here with a real
+#    submissionstatustable that has no due-date row at all, to prove
+#    the extraction correctly returns None — not a crash, not a
+#    fabricated date — for a real Moodle structure that genuinely
+#    carries no due date text on the page, rather than assuming this
+#    case can't happen.
+_ASSIGNMENT_PAGE_STATUS_TABLE_NO_DUE_DATE = """
+<html><body>
+<table class="submissionstatustable">
+<tr><td>Submission status</td><td>No attempt</td></tr>
+<tr><td>Grading status</td><td>Not graded</td></tr>
+</table>
+</body></html>
+"""
+
 
 class _Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
@@ -116,6 +157,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             body = _ASSIGNMENT_PAGE_WITH_LONG_INTRO
         elif self.path.startswith("/with-due-date"):
             body = _ASSIGNMENT_PAGE_WITH_DUE_DATE
+        elif self.path.startswith("/no-due-date-status-table"):
+            body = _ASSIGNMENT_PAGE_STATUS_TABLE_NO_DUE_DATE
+        elif self.path.startswith("/due-date-in-status-table"):
+            body = _ASSIGNMENT_PAGE_DUE_DATE_IN_STATUS_TABLE
         elif self.path.startswith("/no-due-date"):
             body = _ASSIGNMENT_PAGE_NO_DUE_DATE
         else:
@@ -151,6 +196,16 @@ with sync_playwright() as p:
 
     status5, desc5, due5 = _fetch_assignment_page_details(page, "BASE_URL/no-due-date")
     print(f"NO_DUE_DATE:{due5!r}")
+
+    # Real structures observed in a live Render sync — see BUILD_LOG.md's
+    # due-date-structure-comparison entry.
+    status6, desc6, due6 = _fetch_assignment_page_details(page, "BASE_URL/due-date-in-status-table")
+    print(f"DUE_DATE_IN_STATUS_TABLE:{due6.isoformat() if due6 else None}")
+    print(f"DUE_DATE_IN_STATUS_TABLE_SUBMISSION_STATUS:{status6}")
+
+    status7, desc7, due7 = _fetch_assignment_page_details(page, "BASE_URL/no-due-date-status-table")
+    print(f"NO_DUE_DATE_STATUS_TABLE:{due7!r}")
+    print(f"NO_DUE_DATE_STATUS_TABLE_SUBMISSION_STATUS:{status7}")
 
     context.close()
     browser.close()
@@ -208,6 +263,24 @@ try:
     check(
         "6. A page with no 'Due date' label at all yields None, not a crash or a fabricated date",
         "NO_DUE_DATE:None" in proc.stdout,
+    )
+    check(
+        "7. CRITICAL (real Render structure #1): a 'Due date' embedded INSIDE the real "
+        "submissionstatustable — the actual structure a real live Render sync captured for "
+        "'Group Documentation : Electronics and Form' — is correctly parsed via the table-scoped "
+        "fallback (13:59 IST -> 08:29 UTC), and submission_status extraction from the same table "
+        "still works unaffected",
+        "DUE_DATE_IN_STATUS_TABLE:2026-09-12T08:29:00" in proc.stdout
+        and "DUE_DATE_IN_STATUS_TABLE_SUBMISSION_STATUS:Submitted for grading" in proc.stdout,
+    )
+    check(
+        "8. CRITICAL (real Render structure #2): a real submissionstatustable that genuinely has no "
+        "due-date row at all — the actual structure a real live Render sync captured for "
+        "'Final EXAM PART B- Submission' — correctly yields None, not a crash or a fabricated date, "
+        "even though a status table IS present (proving the table-scoped fallback doesn't "
+        "over-match or invent a value when the real table simply doesn't carry one)",
+        "NO_DUE_DATE_STATUS_TABLE:None" in proc.stdout
+        and "NO_DUE_DATE_STATUS_TABLE_SUBMISSION_STATUS:No attempt" in proc.stdout,
     )
 except Exception as exc:
     check(f"0. Extraction test setup failed unexpectedly: {exc}", False)
