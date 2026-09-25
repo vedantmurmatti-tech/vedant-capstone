@@ -2709,4 +2709,49 @@ Not a backend problem, not a CORS misconfiguration, not a wrong build-time API U
 
 ---
 
+## 2026-09-25 (Timeline assignment discovery: real regression traced to reading the block's DOM before its async-loaded event list rendered)
+
+**Scope**: `moodle/sync_service.py`'s `_sync_course_assignments()` only. Course-page assignment discovery, due-date card extraction, document downloading, and authentication were not touched.
+
+### Real evidence used
+
+The user pasted the real Render log directly (the first attempted file attachment didn't come through — asked for and received the raw text instead, per this project's standing rule against guessing at unseen evidence).
+
+### Root cause, confirmed directly from the log
+
+```
+[SYNC DEBUG] Timeline block found: 8 candidate link(s) to inspect
+Timeline candidate 0/8: text='All' href='#' html='<a class="dropdown-item" href="#" data-filtername="all" ...'
+Timeline candidate 1/8: text='Overdue' href='#' ...
+Timeline candidate 2/8: text='Next 7 days' href='#' ...
+Timeline candidate 3/8: text='Next 30 days' href='#' ...
+Timeline candidate 4/8: text='Next 3 months' href='#' ...
+Timeline candidate 5/8: text='Next 6 months' href='#' ...
+Timeline candidate 6/8: text='Sort by dates' href='#view_dates_...' data-toggle="tab" ...
+Timeline candidate 7/8: text='Sort by courses' href='#view_courses_...' data-toggle="tab" ...
+[SYNC DEBUG] assignments discovered per course: {} (total discovered=0 persisted=0)
+```
+
+Every single Timeline candidate the code ever saw was one of the block's own **8 static filter/sort dropdown items** (`class="dropdown-item"`, `href="#"` or a same-page tab fragment) — never a real `/mod/assign/...` event link. The rejection logic (`not_an_assignment_link`) was working exactly as designed; the container selector (`section.block_timeline, .block_timeline`) was never wrong either. The actual bug: `_sync_course_assignments()` waited for the block to become **visible**, then a fixed `page.wait_for_timeout(1500)`, and read `timeline.locator("a").count()` right after — but the block's real event list (the actual assignment links) is fetched and rendered **asynchronously**, separately from its always-immediately-present filter/sort menu. The fixed 1.5s wasn't reliably long enough for that second render to finish, so the code was consistently reading the DOM too early and seeing only the 8 menu items — every single sync, 100% reproducible, not a flaky timing issue.
+
+(For context: the sync as a whole was NOT broken — the secondary course-page discovery path, untouched by this fix, was already finding and persisting the real assignments with correct due dates via card extraction, e.g. `'Assignment 1'`/`'Class Assignment - 1'`/etc. all visible later in the same log. This fix restores the Timeline path as a genuine second, independent discovery source, rather than leaving it silently contributing zero every sync.)
+
+### Fix
+
+Replaced the fixed `page.wait_for_timeout(1500)` with an explicit wait for a **real signal** that the event list has rendered: `timeline.locator('a[href*="/mod/assign/"]').first.wait_for(state="attached", timeout=8000)`. A genuinely empty Timeline (no assignments due in the current window at all — a real, legitimate state) is not treated as an error: the wait simply times out after 8s and the function proceeds with whatever's in the DOM, exactly as before. A brief 500ms settle wait follows (down from the old 1500ms, now that the real wait above does the actual work).
+
+### Regression test added: `tests/test_due_date_card_extraction.py` → new file `tests/test_timeline_async_discovery.py`
+
+Reproduces the real Moodle dropdown-menu markup **verbatim** (same classes/attributes/hrefs as the real log) and injects the real assignment event into the DOM via a delayed script (3000ms — deliberately longer than the old fixed 1500ms wait this fix replaced, shorter than the new 8000ms explicit wait), so the test fails against the old code and passes against the new code. **Verified this directly, not assumed**: `git stash`-reverted the fix and re-ran the new test — it failed on exactly the two checks that matter (the real assignment not discovered; count not exactly 1), while the unrelated checks (dropdown items never miscounted) still passed, confirming this is a real, targeted regression test and not a coincidentally-passing one. Restored the fix and re-ran — 6/6 passed. A second scenario (a genuinely empty Timeline, no event ever rendered) confirms the new wait times out gracefully with zero assignments discovered, not a crash or a hang.
+
+### Tests run
+
+`tests/test_timeline_async_discovery.py` (new): 6/6. Directly relevant regression suite: `test_sync_service.py` 56/56 (the real end-to-end Playwright-driven Timeline discovery tests, including the ones this function's docstring already references for its own prior fixes), `test_course_page_assignment_discovery.py` 10/10, `test_due_date_card_extraction.py` 12/12, `test_assignment_description.py` 11/11, `test_course_query_matching.py` 15/15, `test_assignment_course_mapping.py` 9/9 — **113/113**, zero regressions.
+
+### Files changed
+
+`Esmerelda/backend/moodle/sync_service.py` (the fix) and `Esmerelda/backend/tests/test_timeline_async_discovery.py` (new regression test). Nothing else.
+
+---
+
 <!-- Add the next entry above this line, newest at the top or bottom — just be consistent -->

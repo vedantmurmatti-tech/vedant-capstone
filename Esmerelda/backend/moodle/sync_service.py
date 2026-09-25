@@ -1361,7 +1361,47 @@ def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) 
         timeline.wait_for(state="visible", timeout=10000)
     except Exception as exc:
         logger.warning("[SYNC DEBUG] Timeline block did not become visible within 10s: %s: %s", type(exc).__name__, exc)
-    page.wait_for_timeout(1500)
+
+    # Root cause of a real production regression (see BUILD_LOG.md's
+    # Timeline-discovery entry — confirmed directly from a real Render
+    # log, not assumed): the Timeline block's container becomes
+    # "visible" (the wait above) as soon as its own STATIC filter/sort
+    # dropdown menu renders — real Moodle markup confirmed to be exactly
+    # 8 `a.dropdown-item` elements ("All", "Overdue", "Next 7/30 days",
+    # "Next 3/6 months", "Sort by dates", "Sort by courses"), every one
+    # of them `href="#"` or a same-page tab fragment, never
+    # `/mod/assign/...`. The block's REAL event list (the actual
+    # assignment links this function exists to find) is fetched and
+    # rendered separately and asynchronously — a fixed
+    # `page.wait_for_timeout(1500)` here was not reliably long enough
+    # for that second render to finish, so this function was
+    # consistently reading the DOM too early, seeing only those 8 static
+    # menu items, and correctly rejecting every one of them as
+    # not_an_assignment_link (the real evidence: "Timeline block found:
+    # 8 candidate link(s)" followed by all 8 being rejected for exactly
+    # that reason, every single sync). The container/selector itself
+    # (`section.block_timeline, .block_timeline`) was never the problem.
+    #
+    # Fixed by waiting for a REAL signal that the event list has
+    # rendered — at least one `/mod/assign/` link actually present in
+    # the block — instead of an arbitrary fixed delay. A genuinely empty
+    # Timeline (no assignments due in its current window at all, a real
+    # possible state) is NOT treated as an error here: this wait simply
+    # times out and the function proceeds with whatever's in the DOM,
+    # exactly as before — the course-page discovery path
+    # (_sync_course_page_assignments(), untouched by this fix) already
+    # covers that case regardless.
+    try:
+        timeline.locator('a[href*="/mod/assign/"]').first.wait_for(state="attached", timeout=8000)
+        logger.info("[SYNC DEBUG] Timeline: a real assignment link appeared in the DOM")
+    except Exception:
+        logger.info(
+            "[SYNC DEBUG] Timeline: no /mod/assign/ link appeared within 8s of the block becoming visible — "
+            "either this account genuinely has no assignments in the Timeline's current window, or its event "
+            "list is still loading; proceeding with whatever is currently in the DOM either way (never treated "
+            "as an error)"
+        )
+    page.wait_for_timeout(500)
 
     active_names = {c["name"] for c in active_courses}
     active_by_moodle_id = {
