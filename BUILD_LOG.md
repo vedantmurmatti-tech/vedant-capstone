@@ -2754,4 +2754,30 @@ Reproduces the real Moodle dropdown-menu markup **verbatim** (same classes/attri
 
 ---
 
+## 2026-09-25 (Assignment submission_status: added card-level extraction, mirroring the existing card-level due-date fix)
+
+**Scope**: `moodle/sync_service.py` only — one new helper plus wiring it into the existing `submission_status` field. Sync architecture, Timeline discovery, due-date parsing, TTS, frontend, auth, and the DB schema are untouched.
+
+### Context
+
+`submission_status` was already fetched via `_fetch_assignment_page_details()`, which navigates to each assignment's own page and reads its `submissionstatustable` (e.g. real observed text "Submission status\nSubmitted for grading" — see the due-date-structure-comparison entry above). That page-level fetch remains exactly as it was. This adds a second, preferred source — reading the same real status text straight off the course-page card/list item, at zero extra navigation cost — mirroring the precedence `_extract_card_due_date()` already established for `due_date` (card value preferred, page fetch as fallback, never the reverse).
+
+### Fix
+
+Added `_extract_card_submission_status(link, *, assignment_name)` immediately after `_extract_card_due_date()`, reusing the exact same ancestor-walk technique and same-card single-href guard (never attribute a neighboring assignment's status to this one). It searches the matched card text for known real Moodle phrases, most-specific first: "Submitted for grading", "No submission", "Not submitted", "Submitted". Wired in at the one place a card's link is already live while being read for `card_due_date` (`_scan_page_for_resources()`'s assignment-candidate branch) — added as `candidate["card_submission_status"]` — and consumed in `_sync_course_page_assignments()` with the same precedence pattern already used for `due_date`: `submission_status = candidate.get("card_submission_status") or submission_status`. The Timeline discovery path's own submission_status fetch is untouched (its `candidates` list is already a fully-detached snapshot by the point submission status is fetched there — no live card link remains to walk).
+
+### Regression test added: `tests/test_card_submission_status.py`
+
+No real card-level submission-status markup was present in this repo's existing tests/logs (only the assignment-page-level `submissionstatustable`, already covered by `test_assignment_description.py`), so this test builds its card fixture directly from the same real phrases those existing fixtures already confirm, laid out in a card/list-item shape matching `_extract_card_due_date()`'s own documented real card layout. Covers: a submitted assignment ("Submitted for grading") → recognized; an unsubmitted assignment ("Not submitted") → recognized; a second real unsubmitted phrasing ("No submission") → recognized; a card with no status text at all → `None`, not a crash or a fabricated value.
+
+### Tests run
+
+`test_card_submission_status.py` (new): 5/5. `test_assignment_description.py`: 11/11. `test_sync_service.py`: 56/56. `test_timeline_async_discovery.py`: 6/6. **78/78, zero regressions.**
+
+### Files changed
+
+`Esmerelda/backend/moodle/sync_service.py` (the new helper + its two wiring points) and `Esmerelda/backend/tests/test_card_submission_status.py` (new regression test). Nothing else.
+
+---
+
 <!-- Add the next entry above this line, newest at the top or bottom — just be consistent -->
