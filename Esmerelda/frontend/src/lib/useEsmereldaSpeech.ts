@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { synthesizeSpeech } from "@/lib/api";
-import { stripMarkdownForSpeech } from "@/lib/utils";
+import { simplifyMoodleCourseIdentifiersForSpeech, stripMarkdownForSpeech } from "@/lib/utils";
 
 // Exponential smoothing rates for the energy reading below — asymmetric on
 // purpose: energy should rise quickly on a loud syllable (attack) but fall
@@ -186,7 +186,7 @@ export function useEsmereldaSpeech() {
       stop();
       requestIdRef.current = myRequestId;
 
-      const cleaned = stripMarkdownForSpeech(text);
+      const cleaned = simplifyMoodleCourseIdentifiersForSpeech(stripMarkdownForSpeech(text));
       if (!cleaned) return;
 
       let url: string;
