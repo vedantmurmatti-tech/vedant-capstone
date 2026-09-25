@@ -30,6 +30,16 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 def get_data_dir() -> Path:
     override = os.environ.get("ESMERELDA_DATA_DIR")
     data_dir = Path(override) if override else BACKEND_DIR / "storage"
+    # .resolve() — everything downstream of this function (including
+    # get_user_browser_profile_dir(), see BUILD_LOG.md's Moodle-profile-
+    # path-trace entry) needs an ABSOLUTE, canonical path so two calls
+    # from different request-handling contexts can never silently disagree
+    # just because ESMERELDA_DATA_DIR happened to be a relative path
+    # evaluated against a different process working directory. Was
+    # previously left as whatever Path(override) produced verbatim — a
+    # real gap, even though not confirmed to be the actual cause of any
+    # specific observed bug; fixed regardless, defensively.
+    data_dir = data_dir.resolve()
     # A fresh Render Persistent Disk mount is an empty directory (the mount point
     # itself exists, but nothing under it does yet) — sqlite3 needs this
     # directory to exist before it can create esmerelda.db inside it, so

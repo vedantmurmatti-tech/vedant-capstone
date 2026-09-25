@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -6,6 +7,18 @@ from playwright.sync_api import sync_playwright
 from storage.paths import get_user_browser_profile_dir
 
 MOODLE_URL = "https://lms.flame.edu.in"
+
+# TEMPORARY, opt-in, OFF by default — a controlled test, not a behavior
+# change (see BUILD_LOG.md's session-lifecycle entry). check_moodle_session()
+# normally launches headless=True regardless of this; setting this env var
+# makes it launch headed instead, ONLY so a real connect -> immediate
+# headed check can be compared against a real connect -> immediate
+# headless check, to test whether the browser's OWN fingerprint (a real,
+# directly observed difference — see below) affects whether Google/Moodle
+# still considers the session valid. Requires a real display (same
+# constraint connect_user_interactively() already has); never touches
+# credentials either way.
+_FORCE_HEADED_SESSION_CHECK = os.environ.get("ESMERELDA_MOODLE_CHECK_HEADED", "0") == "1"
 # Legacy, pre-multi-user shared profile — see BUILD_LOG.md's multi-user
 # foundation entry. Left on disk and still used by this module's own
 # main()/get_authenticated_page() (the standalone interactive tool this
@@ -19,6 +32,27 @@ logger = logging.getLogger("esmerelda.sync")
 
 _LOGGED_IN_MARKER_SELECTOR = "a[href*='/login/logout.php'], .usermenu"
 _LOGIN_FORM_SELECTOR = "#login #username, form#login"
+
+
+def _cookie_names_only(context) -> list[str]:
+    """Cookie NAMES only, never values — see this module's own
+    diagnostics' explicit "never log cookie values, auth tokens, Google
+    credentials, session IDs" requirement. Deduplicated and sorted so two
+    log lines are directly, visually comparable."""
+    try:
+        return sorted({c.get("name", "") for c in context.cookies() if c.get("name")})
+    except Exception:
+        return []
+
+
+def _local_storage_keys_only(page) -> list[str]:
+    """localStorage KEY names only, never values. Best-effort — some
+    pages/origins can throw on localStorage access (e.g. a third-party
+    iframe context); never treated as an error."""
+    try:
+        return page.evaluate("Object.keys(window.localStorage || {})")
+    except Exception:
+        return []
 
 
 def check_moodle_session(user_id: int, *, headless: bool = True) -> str:
@@ -47,13 +81,27 @@ def check_moodle_session(user_id: int, *, headless: bool = True) -> str:
     This function's own browser context is always closed before
     returning, whether the check succeeds or raises — it must never be
     the thing holding a lock on this user's profile directory that a
-    later real sync/connect then can't open."""
+    later real sync/connect then can't open.
+
+    `headless` defaults to True (unchanged default behavior) but is
+    forced to False when ESMERELDA_MOODLE_CHECK_HEADED=1 is set — a
+    TEMPORARY, opt-in controlled-test override (see BUILD_LOG.md's
+    session-lifecycle entry), never a change to normal behavior."""
+    effective_headless = False if _FORCE_HEADED_SESSION_CHECK else headless
     profile_dir = get_user_browser_profile_dir(user_id)
+    logger.info(
+        "[MOODLE PROFILE TRACE]\noperation=session-check\nuser_id=%s\nprofile_path=%s",
+        user_id, profile_dir,
+    )
+    logger.info(
+        "[MOODLE SESSION LIFECYCLE]\nCHECK launch:\n  profile_path=%s\n  headless=%s",
+        profile_dir, effective_headless,
+    )
 
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
             user_data_dir=str(profile_dir),
-            headless=headless,
+            headless=effective_headless,
         )
         try:
             page = context.pages[0] if context.pages else context.new_page()
@@ -67,6 +115,15 @@ def check_moodle_session(user_id: int, *, headless: bool = True) -> str:
 
             logged_in = page.locator(_LOGGED_IN_MARKER_SELECTOR).count() > 0
             has_login_form = page.locator(_LOGIN_FORM_SELECTOR).count() > 0
+
+            logger.info(
+                "[MOODLE SESSION LIFECYCLE]\nCHECK loaded:\n  url=%s\n  title=%r\n  logged_in_marker=%s",
+                page.url, page.title(), logged_in and not has_login_form,
+            )
+            logger.info(
+                "[MOODLE SESSION LIFECYCLE]\nCHECK cookies:\n  cookies_count=%d\n  relevant_moodle_cookies=%s",
+                len(context.cookies()), _cookie_names_only(context),
+            )
 
             if logged_in and not has_login_form:
                 logger.info("[MOODLE AUTH] Existing session valid — skipping login (user=%s)", user_id)
@@ -109,6 +166,14 @@ def connect_user_interactively(user_id: int, *, timeout_seconds: int = 180) -> s
     mechanism" Part 8 explicitly allows for now, not a claim that it's
     production-ready."""
     profile_dir = get_user_browser_profile_dir(user_id)
+    logger.info(
+        "[MOODLE PROFILE TRACE]\noperation=connect\nuser_id=%s\nprofile_path=%s",
+        user_id, profile_dir,
+    )
+    logger.info(
+        "[MOODLE SESSION LIFECYCLE]\nCONNECT launch:\n  profile_path=%s\n  headless=%s",
+        profile_dir, False,
+    )
 
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
@@ -135,6 +200,16 @@ def connect_user_interactively(user_id: int, *, timeout_seconds: int = 180) -> s
                 except Exception:
                     continue
                 if logged_in and not has_login_form:
+                    logger.info(
+                        "[MOODLE SESSION LIFECYCLE]\nCONNECT authenticated:\n  url=%s\n  title=%r\n  "
+                        "logged_in_marker=%s",
+                        page.url, page.title(), True,
+                    )
+                    logger.info(
+                        "[MOODLE SESSION LIFECYCLE]\nCONNECT before close:\n  cookies_count=%d\n  "
+                        "relevant_moodle_cookies=%s\n  local_storage_keys=%s",
+                        len(context.cookies()), _cookie_names_only(context), _local_storage_keys_only(page),
+                    )
                     logger.info("[MOODLE AUTH] user=%s completed manual sign-in — session persisted", user_id)
                     return "connected"
 
@@ -142,6 +217,10 @@ def connect_user_interactively(user_id: int, *, timeout_seconds: int = 180) -> s
             return "timed_out"
         finally:
             context.close()
+            logger.info(
+                "[MOODLE SESSION LIFECYCLE]\nCONNECT after close:\n  profile_path=%s",
+                profile_dir,
+            )
 
 
 def handle_dialog(dialog):

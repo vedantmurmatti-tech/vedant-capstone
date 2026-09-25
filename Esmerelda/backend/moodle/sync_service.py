@@ -684,11 +684,25 @@ def _scan_page_for_resources(
                     if assignment_hrefs_seen is None or absolute_href not in assignment_hrefs_seen:
                         if assignment_hrefs_seen is not None:
                             assignment_hrefs_seen.add(absolute_href)
+                        # Card-level "Due:" extraction (see
+                        # _extract_card_due_date()'s own docstring) —
+                        # tried HERE, right where the link is still
+                        # available, since the due date lives on this
+                        # SAME card/list item, not on the assignment's
+                        # own page (real evidence — see BUILD_LOG.md's
+                        # due-date-card-extraction entry). Preferred over
+                        # the individual-page fallback by
+                        # _sync_course_page_assignments(), which is the
+                        # only place this candidate dict is consumed.
+                        card_due_date = _extract_card_due_date(
+                            link, assignment_name=name, card_url=absolute_href
+                        )
                         assignment_candidates.append({
                             "href": absolute_href,
                             "name": name,
                             "course_name": course_name,
                             "course_moodle_id": course_moodle_id,
+                            "card_due_date": card_due_date,
                         })
                 continue  # never persisted as a Resource — handled entirely by the assignment path above
             href = urljoin(moodle_url, href)
@@ -933,6 +947,130 @@ def _extract_due_date(text: str, assignment_name: str) -> datetime | None:
     if _DUE_DATE_DIAGNOSTICS:
         logger.info("[DUE DATE TRACE] PARSED DATETIME: %r (naive-UTC)", result)
     return result
+
+
+# "Due:" (short inline badge label) — DELIBERATELY a different pattern
+# from "due date" (_DUE_DATE_PATTERN's own label search in
+# _extract_due_date_from_assignment_page() below): real evidence (a
+# screenshot of the actual live FLAME Moodle course/Timeline listing —
+# see BUILD_LOG.md's due-date-card-extraction entry) shows assignment
+# cards rendering "Due: Friday, 11 September 2026, 11:59 PM" directly
+# under/near the activity title — Moodle's real "activity dates" feature,
+# shown on the course page's own activity list (and the Timeline block),
+# using a short "Due:" badge — NOT the same "Due date" row an individual
+# assignment's own submission-status table uses
+# (_extract_due_date_from_assignment_page()). `due\s*:` does not match
+# "due date:" (a real word, "date", sits between "due" and the colon
+# there), so the two never collide.
+_CARD_DUE_LABEL_RE = re.compile(r"\bdue\s*:\s*", re.IGNORECASE)
+
+
+def _extract_card_due_date(link, *, assignment_name: str, card_url: str) -> datetime | None:
+    """The PREFERRED due-date source for course-page-discovered
+    assignments (see _scan_page_for_resources()'s assignment-candidate
+    branch, and _sync_course_page_assignments()'s precedence over
+    _fetch_assignment_page_details()'s page-body fallback) — per real,
+    directly observed evidence that FLAME Moodle's own course/Timeline
+    listing renders a "Due: <date>" badge on the SAME card/list item as
+    the assignment's link and title, while many individual assignment
+    pages do not expose "Due date" text in their own body at all (see
+    BUILD_LOG.md's two prior due-date entries).
+
+    Walks up to 8 ancestor levels from the assignment's own `<a>` link —
+    the exact same technique _extract_due_date() above already uses for
+    the structurally similar Timeline-ancestor-walk problem, proven to
+    work there — stopping at the FIRST ancestor level whose own text
+    contains BOTH the assignment's real name AND a "Due:" label
+    preceding it.
+
+    CRITICAL guard, added after a real failure was caught by this
+    file's own regression tests (see BUILD_LOG.md's due-date-card-
+    extraction entry): the walk STOPS THE MOMENT an ancestor contains
+    more than one distinct link — never searches that level's text or
+    goes any wider. Without this, a first version of this function
+    reliably (confirmed directly, not a hypothetical) attributed a
+    NEIGHBORING assignment's real due date to an assignment that
+    genuinely had none, the moment the walk reached a shared list
+    wrapper containing multiple cards — exactly the "guessing a date"
+    outcome this feature must never produce. Requiring exactly one
+    distinct href in scope is what actually proves a given ancestor is
+    still "this one assignment's own card" and not a wider list —
+    checking for the assignment's name alone (Timeline's own approach
+    above) is not sufficient here, because a wide-enough ancestor
+    trivially contains every card's name as a descendant, including
+    ones that have no due date of their own.
+
+    NOT verified against FLAME's actual raw HTML from this environment
+    (no live Moodle credentials were available here — see BUILD_LOG.md) —
+    built from a real screenshot of the live site plus this project's own
+    already-proven ancestor-walk technique, not a blind guess at
+    selectors. If the real DOM nests the due-date badge differently than
+    this walk finds, this returns None, same as every other best-effort
+    field in this file — never a crash, never a fabricated date."""
+    for _ in range(8):
+        try:
+            link = link.locator("..")
+        except Exception:
+            break
+
+        try:
+            hrefs_in_scope: set[str] = set()
+            sibling_links = link.locator("a[href]")
+            for j in range(sibling_links.count()):
+                h = sibling_links.nth(j).get_attribute("href")
+                if h:
+                    hrefs_in_scope.add(h)
+            if len(hrefs_in_scope) > 1:
+                # Widened past this assignment's own card — a real
+                # neighboring card's due date lives out here too, so
+                # this level (and everything wider) can no longer be
+                # trusted. Stop, don't keep climbing.
+                break
+        except Exception:
+            break
+
+        try:
+            parent_text = link.inner_text().strip()
+        except Exception:
+            break
+
+        position = parent_text.find(assignment_name)
+        if position == -1:
+            continue
+
+        label_matches = list(_CARD_DUE_LABEL_RE.finditer(parent_text[:position]))
+        if not label_matches:
+            continue
+
+        label_match = label_matches[-1]
+        preceding = parent_text[:position]
+        window = preceding[label_match.end():label_match.end() + 100]
+
+        if _DUE_DATE_DIAGNOSTICS:
+            logger.info("[DUE DATE CARD TRACE] ASSIGNMENT: %r", assignment_name)
+            logger.info("[DUE DATE CARD TRACE] CARD URL: %s", card_url)
+            logger.info("[DUE DATE CARD TRACE] RAW CARD TEXT: %r", parent_text[:400])
+            logger.info("[DUE DATE CARD TRACE] RAW DUE TEXT: %r", window)
+
+        date_match = _DUE_DATE_PATTERN.search(window)
+        if date_match is None:
+            if _DUE_DATE_DIAGNOSTICS:
+                logger.info(
+                    "[DUE DATE CARD TRACE] PARSED DATETIME: None (\"Due:\" label found, but the text right "
+                    "after it did not match the expected date pattern)"
+                )
+            continue
+
+        result = _parse_due_date_match(date_match)
+        if _DUE_DATE_DIAGNOSTICS:
+            logger.info("[DUE DATE CARD TRACE] PARSED DATETIME: %r (naive-UTC)", result)
+        return result
+
+    if _DUE_DATE_DIAGNOSTICS:
+        logger.info("[DUE DATE CARD TRACE] ASSIGNMENT: %r", assignment_name)
+        logger.info("[DUE DATE CARD TRACE] CARD URL: %s", card_url)
+        logger.info("[DUE DATE CARD TRACE] NO DUE DATE FOUND: %r", assignment_name)
+    return None
 
 
 def _search_due_date_label(text: str, *, source: str) -> tuple[datetime | None, str]:
@@ -1507,20 +1645,26 @@ def _sync_course_page_assignments(
                 continue  # already found and persisted via the Timeline — not a new discovery
 
             discovered += 1
-            submission_status, description, due_date = _fetch_assignment_page_details(
+            submission_status, description, page_due_date = _fetch_assignment_page_details(
                 page, candidate["href"], assignment_name=candidate["name"]
             )
+            # Precedence (see BUILD_LOG.md's due-date-card-extraction
+            # entry): the course/Timeline CARD's own "Due:" badge
+            # (extracted back in _scan_page_for_resources(), while the
+            # card/link was still on screen — see card_due_date above) is
+            # the PROVEN, PREFERRED source for this instance — real
+            # evidence showed most individual assignment pages don't
+            # expose "Due date" text in their own body at all, while the
+            # course listing's card reliably does. The individual page's
+            # own extraction (page_due_date) is kept as a fallback for
+            # whichever assignment the card-level walk didn't find one
+            # for, never the other way around.
+            due_date = candidate.get("card_due_date") or page_due_date
             saved = save_assignment(
                 moodle_id=moodle_id,
                 course_name=candidate["course_name"],
                 name=candidate["name"],
                 submission_url=candidate["href"],
-                # No due date is available from the course-page link itself
-                # (unlike the Timeline, which has its own due-date text
-                # nearby) — but _fetch_assignment_page_details() now also
-                # reads the assignment's own "Due date" label from the same
-                # page visit this line already made for submission status,
-                # so this is no longer always None. Still safe either way:
                 # save_assignment() only overwrites an existing due_date
                 # when given a real value, never erasing one a prior
                 # Timeline-based sync recorded.
@@ -1551,6 +1695,11 @@ def _sync_course_page_assignments(
                 logger.info(
                     "[DUE DATE TRACE] ASSIGNMENT: %r (course-page path) — DB DUE DATE: %r",
                     candidate["name"], saved.due_date,
+                )
+                logger.info(
+                    "[DUE DATE CARD TRACE] ASSIGNMENT: %r — card_due_date=%r page_due_date=%r "
+                    "STORED DB DUE DATE: %r",
+                    candidate["name"], candidate.get("card_due_date"), page_due_date, saved.due_date,
                 )
         else:
             logger.warning(
@@ -1799,6 +1948,10 @@ def _run_sync_with_persisted_session(user_id: int, moodle_url: str) -> SyncResul
 
     result = SyncResult()
     profile_dir = get_user_browser_profile_dir(user_id)
+    logger.info(
+        "[MOODLE PROFILE TRACE]\noperation=sync\nuser_id=%s\nprofile_path=%s",
+        user_id, profile_dir,
+    )
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(user_data_dir=str(profile_dir), headless=True)
         try:
