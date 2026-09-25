@@ -697,12 +697,16 @@ def _scan_page_for_resources(
                         card_due_date = _extract_card_due_date(
                             link, assignment_name=name, card_url=absolute_href
                         )
+                        card_submission_status = _extract_card_submission_status(
+                            link, assignment_name=name
+                        )
                         assignment_candidates.append({
                             "href": absolute_href,
                             "name": name,
                             "course_name": course_name,
                             "course_moodle_id": course_moodle_id,
                             "card_due_date": card_due_date,
+                            "card_submission_status": card_submission_status,
                         })
                 continue  # never persisted as a Resource — handled entirely by the assignment path above
             href = urljoin(moodle_url, href)
@@ -1070,6 +1074,65 @@ def _extract_card_due_date(link, *, assignment_name: str, card_url: str) -> date
         logger.info("[DUE DATE CARD TRACE] ASSIGNMENT: %r", assignment_name)
         logger.info("[DUE DATE CARD TRACE] CARD URL: %s", card_url)
         logger.info("[DUE DATE CARD TRACE] NO DUE DATE FOUND: %r", assignment_name)
+    return None
+
+
+# Real, observed Moodle submission-status phrases (see this file's own
+# _fetch_assignment_page_details(), which already scrapes these exact
+# strings from an assignment's own submissionstatustable — e.g. real
+# captured text "Submission status\nSubmitted for grading" — see
+# BUILD_LOG.md's due-date-structure-comparison entry). Ordered most-
+# specific first so "Submitted for grading" is matched whole rather than
+# only its "Submitted" substring.
+_CARD_SUBMISSION_STATUS_PATTERNS = [
+    re.compile(r"\bsubmitted for grading\b", re.IGNORECASE),
+    re.compile(r"\bno submission\b", re.IGNORECASE),
+    re.compile(r"\bnot submitted\b", re.IGNORECASE),
+    re.compile(r"\bsubmitted\b", re.IGNORECASE),
+]
+
+
+def _extract_card_submission_status(link, *, assignment_name: str) -> str | None:
+    """Card-level submission-status extraction, same ancestor-walk
+    technique as _extract_card_due_date() right above (including its
+    same-card single-href guard, for the same reason: never attribute a
+    NEIGHBORING assignment's status to this one). Preferred over
+    _fetch_assignment_page_details()'s per-assignment-page fetch when
+    both are available — no extra navigation needed, so it can only ever
+    add coverage, never remove it, since that page-level fetch remains
+    the fallback for whichever assignment this walk doesn't find a
+    status for."""
+    for _ in range(8):
+        try:
+            link = link.locator("..")
+        except Exception:
+            break
+
+        try:
+            hrefs_in_scope: set[str] = set()
+            sibling_links = link.locator("a[href]")
+            for j in range(sibling_links.count()):
+                h = sibling_links.nth(j).get_attribute("href")
+                if h:
+                    hrefs_in_scope.add(h)
+            if len(hrefs_in_scope) > 1:
+                break
+        except Exception:
+            break
+
+        try:
+            parent_text = link.inner_text().strip()
+        except Exception:
+            break
+
+        if assignment_name not in parent_text:
+            continue
+
+        for pattern in _CARD_SUBMISSION_STATUS_PATTERNS:
+            match = pattern.search(parent_text)
+            if match:
+                return match.group(0)
+
     return None
 
 
@@ -1700,6 +1763,12 @@ def _sync_course_page_assignments(
             # whichever assignment the card-level walk didn't find one
             # for, never the other way around.
             due_date = candidate.get("card_due_date") or page_due_date
+            # Same precedence as due_date above: the card's own status
+            # (extracted in _scan_page_for_resources(), while the link was
+            # still on screen) is preferred; the individual page's own
+            # submissionstatustable fetch is the fallback, never the
+            # override.
+            submission_status = candidate.get("card_submission_status") or submission_status
             saved = save_assignment(
                 moodle_id=moodle_id,
                 course_name=candidate["course_name"],
