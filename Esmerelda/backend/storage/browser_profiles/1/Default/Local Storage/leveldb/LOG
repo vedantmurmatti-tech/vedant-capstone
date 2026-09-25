@@ -1,0 +1,14 @@
+2026/09/25-12:27:58.365 7568 Reusing MANIFEST D:\agentic ai\vedant-capstone\Esmerelda\backend\storage\browser_profiles\1\Default\Local Storage\leveldb/MANIFEST-000001
+2026/09/25-12:27:58.367 7568 Recovering log #27
+2026/09/25-12:27:58.367 7568 Level-0 table #29: started
+2026/09/25-12:27:58.376 7568 Level-0 table #29: 37543 bytes OK
+2026/09/25-12:27:58.381 7568 Delete type=0 #27
+2026/09/25-12:27:58.382 53ac Compacting 4@0 + 1@1 files
+2026/09/25-12:27:58.391 53ac Generated table #31@0: 47 keys, 18238 bytes
+2026/09/25-12:27:58.392 53ac Compacted 4@0 + 1@1 files => 18238 bytes
+2026/09/25-12:27:58.392 53ac compacted to: files[ 0 1 1 0 0 0 0 ]
+2026/09/25-12:27:58.393 53ac Delete type=2 #18
+2026/09/25-12:27:58.393 53ac Delete type=2 #20
+2026/09/25-12:27:58.393 53ac Delete type=2 #23
+2026/09/25-12:27:58.394 53ac Delete type=2 #26
+2026/09/25-12:27:58.394 53ac Delete type=2 #29

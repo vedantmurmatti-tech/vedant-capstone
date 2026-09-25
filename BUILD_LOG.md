@@ -2406,4 +2406,173 @@ Both assignments went through the exact same code (`_extract_due_date_from_assig
 
 ---
 
+## 2026-09-25 (Due-date CARD extraction: a new, preferred source from the course listing itself, per real FLAME Moodle screenshot evidence)
+
+### The real evidence this entry is built from
+
+The user supplied a real screenshot of FLAME Moodle's own live course/Timeline listing, showing genuine assignment cards each rendering a short "Due: <date>" badge directly next to the activity's own title/icon — e.g. `Due: Friday, 11 September 2026, 11:59 PM` right above `Assessment 1: Idea Lock-in, Plan & Repo Setup`. This is a DIFFERENT, shorter label ("Due:") than the "Due date" row the individual assignment page's submission-status table uses (the source the two prior due-date entries in this log already worked with) — confirming the user's core claim: the course/Timeline card is a genuinely separate, and evidently more reliable, source Esmerelda's scraper was not reading from at all before this entry.
+
+### Traced the existing code first, as instructed
+
+`_scan_page_for_resources()` (course-page resource/assignment scanning) already builds `assignment_candidates` — one dict per discovered `/mod/assign/` link, carrying `href`/`name`/`course_name`/`course_moodle_id` — but never looked at that link's own surrounding DOM for anything beyond the link text itself. Due-date extraction for course-page-discovered assignments happened ENTIRELY later, in a separate individual-page visit (`_fetch_assignment_page_details()`), exactly the source the prior two entries already showed frequently comes up empty. This confirmed the user's diagnosis precisely: the scraper was never even looking at the one place — the assignment's own card, on the page already being scanned — that the real screenshot proves reliably carries the date.
+
+### Implementation
+
+New `_extract_card_due_date(link, assignment_name, card_url)` in `moodle/sync_service.py`, called from `_scan_page_for_resources()` at the exact point each assignment candidate is built (the link element is already on-hand there — no extra page visit needed). Walks up ancestor elements from the assignment's own `<a>` link (the same technique `_extract_due_date()` already uses for the Timeline block, proven there), searching for a `Due:` label (a new, separate regex, `_CARD_DUE_LABEL_RE = r"\bdue\s*:\s*"` — deliberately distinct from the existing `"due date"` search, since `due\s*:` cannot match `"due date:"` and vice versa) followed by the same shared date pattern already used everywhere else in this file (`_DUE_DATE_PATTERN`/`_parse_due_date_match()` — unchanged, still producing naive-UTC via the unmodified `storage/timezones.py` conversion, per the explicit instruction not to touch timezone handling).
+
+`_sync_course_page_assignments()` now prefers this card-extracted value over the individual-page fallback (`due_date = candidate.get("card_due_date") or page_due_date`) — the page-body extraction from the prior two entries is kept, unmodified, purely as a fallback for whichever assignment the card doesn't have one for, per the explicit instruction.
+
+**A real bug this project's own testing caught and fixed before ever claiming this works**: a first version of the ancestor walk, tested against a realistic multi-card page (several assignment `<li>` cards sharing one outer list wrapper — the way a real Moodle activity list is actually structured), reliably attributed a NEIGHBORING assignment's real due date to one that had none of its own, the moment the walk widened past the individual card into the shared wrapper. Confirmed directly, not hypothetical — reproduced with a minimal real Playwright page before being fixed. **Fix**: the walk now stops immediately the moment an ancestor contains more than one distinct `href` — it never searches or trusts that level's text, and never widens further. This is what actually proves a given ancestor is still "this one assignment's own card" rather than a wider list; checking only for the assignment's name being present (which the Timeline path relies on) is not sufficient here, because a wide-enough ancestor trivially contains every card's name as a descendant, including ones with no due date of their own. Re-tested against the exact same multi-card scenario after the fix — correctly returns `None` for the assignment with no due date, no longer stealing its neighbor's.
+
+### Diagnostics added, exactly as requested
+
+`[DUE DATE CARD TRACE]` lines: `ASSIGNMENT`, `CARD URL`, `RAW CARD TEXT`, `RAW DUE TEXT`, `PARSED DATETIME`, and (logged in `_sync_course_page_assignments()` once the row is actually saved) `STORED DB DUE DATE` alongside both the card and page-fallback values that were compared — plus an explicit `NO DUE DATE FOUND: <assignment>` line when the card-level walk finds nothing. On by default (shares the same `ESMERELDA_DUE_DATE_DIAGNOSTICS` flag the prior two entries' `[DUE DATE TRACE]` lines already use), so the next real Render sync's logs will show this without any redeploy configuration step.
+
+### Regression tests (new file: `tests/test_due_date_card_extraction.py`)
+
+**Part 1 — unit-level**, exercising every scenario explicitly requested against a real headless-Chromium-rendered page: a card with a real `Due:` badge (parses correctly), a card with BOTH `Opened:` and `Due:` badges present (correctly picks `Due:`, matching the real "Assessment 3: MVP" card shape from the screenshot), a card with no due text next to a sibling that has one (**the exact scenario that caught the real bug above** — confirmed returns `None`, does not steal the neighbor's date), and a card with a `Due:` label but unparseable text (correctly returns `None`, not a crash or a guess).
+
+**Part 2 — end-to-end**, a real `run_sync()` against a real fake Moodle course page containing all three of FLAME's real screenshot assignments verbatim (same names, same due-date strings) alongside a no-due-date assignment and a malformed-due-text assignent, five cards on one page: all three real assignments persist with the exact correct naive-UTC values (`11:59 PM` IST → `18:29` UTC in every case, i.e. exactly `2026-09-11T18:29:00`, `2026-09-17T18:29:00`, `2026-09-19T18:29:00`), the no-due-date and malformed-text assignments both correctly persist `due_date=None`, and all 5 are discovered/persisted together on the same page — every item on the user's requested test list, covered.
+
+**12/12 passed.**
+
+### Tests run (full validation, per instruction)
+
+- Full backend plain-assert suite (every `tests/test_*.py` except the pytest-based `test_groq_agent.py`/`test_text_extraction.py`, run separately below): **238/238 passed**, zero regressions — `test_assignment_action_planner.py` 9/9, `test_assignment_course_mapping.py` 9/9, `test_assignment_description.py` 11/11, `test_course_page_assignment_discovery.py` 10/10, `test_course_query_matching.py` 15/15, `test_deployment_readiness.py` 9/9, `test_document_download_limit.py` 13/13, `test_document_retrieval.py` 11/11, `test_document_skip_logic.py` 34/34, `test_due_date_card_extraction.py` 12/12 (new), `test_followups.py` 9/9, `test_production_readiness.py` 12/12, `test_resource_dedup.py` 10/10, `test_sync_service.py` 56/56, `test_sync_staleness.py` 18/18.
+- `python -m pytest tests -q`: 12 passed, the same pre-existing 5 `test_groq_agent.py` failures (missing `pytest-asyncio` plugin) as every prior entry in this log.
+- `npx tsc -b` and `npm run build` (frontend, untouched by this entry): clean.
+
+### What was NOT changed, per explicit instruction
+
+Assignment discovery itself, course matching, authentication, Playwright session handling, and frontend rendering are all untouched. Timezone handling (`storage/timezones.py`, `parse_moodle_datetime_to_utc()`) is untouched — reused exactly as-is. The individual-page extraction path from the prior two entries is untouched, kept only as a fallback.
+
+### Honest bottom line — NOT claiming this is fixed yet
+
+Per the explicit instruction: **this is not claimed fixed until a real Render sync's logs show real `RAW DUE TEXT`/`PARSED DATETIME` for "Assessment 1: Idea Lock-in, Plan & Repo Setup", "Assessment 2: Custom Skill...", and "Assessment 3: MVP"**. What this entry actually demonstrates: the new extraction path is implemented at the correct point in the real code (traced first, not guessed), reused the project's own already-proven ancestor-walk technique, caught and fixed a real bug in its first version before ever claiming success, and — in a controlled reproduction using FLAME's own real assignment names and real due-date strings from the screenshot, laid out the way a real Moodle activity list actually nests multiple cards — produces exactly the correct persisted values, with no fabrication for the cases that should stay null. The real, concrete next step is unchanged in kind from the prior two entries: trigger one more Render sync and read its `[DUE DATE CARD TRACE]` lines for these three real assignments.
+
+---
+
+## 2026-09-25 (Moodle profile-path trace: the path is NOT the bug — disproven with direct evidence, real root cause is elsewhere)
+
+### The user's hypothesis, checked directly rather than assumed
+
+Traced all three call sites as requested — `api/routes.py`'s `connect_moodle`/`connect_user_interactively`, `moodle/browser.py`'s `check_moodle_session`, and `moodle/sync_service.py`'s `_run_sync_with_persisted_session` — and confirmed via `inspect.getsource()` on the real, running module objects (not just reading the files) that **all three already call the exact same canonical helper, `storage/paths.py`'s `get_user_browser_profile_dir(user_id)`, with no divergence**:
+```
+check_moodle_session:              profile_dir = get_user_browser_profile_dir(user_id)
+connect_user_interactively:        profile_dir = get_user_browser_profile_dir(user_id)
+_run_sync_with_persisted_session:  profile_dir = get_user_browser_profile_dir(user_id)
+```
+Calling `get_user_browser_profile_dir(1)` directly, twice, produced byte-identical results: `D:\...\Esmerelda\backend\storage\browser_profiles\1` both times — exactly the "expected canonical per-user location" the task described, already in effect. **There was no path-mismatch bug to fix.**
+
+### Diagnostics added, exactly as requested, and used to prove this live
+
+Added `[MOODLE PROFILE TRACE]` logging (`operation=connect|session-check|sync`, `user_id`, `profile_path`) at all three call sites. Ran the real local server and captured all three, live, in the same process:
+```
+operation=connect       user_id=1   profile_path=D:\...\storage\browser_profiles\1   (POST /api/moodle/connect)
+operation=session-check user_id=1   profile_path=D:\...\storage\browser_profiles\1   (GET /api/moodle/session-status)
+operation=session-check user_id=1   profile_path=D:\...\storage\browser_profiles\1   (run_sync()'s own dispatcher, from POST /api/sync/moodle)
+```
+**Identical, byte-for-byte, across all three real operations, captured from the real running app — this is the direct proof the task required, not an inference.**
+
+### So why did the user see "connected" from /connect immediately followed by "expired" at sync time?
+
+Investigated empirically rather than guessed, using the REAL leftover session (`storage/browser_profiles/1/Default/Network/Cookies`, a real 32KB SQLite cookie database left on this machine from the user's own earlier real `/api/moodle/connect` login):
+
+1. **First ruled out a real, once-plausible mechanism**: whether a session cookie set in one `launch_persistent_context()` call could fail to survive an immediately-following second `launch_persistent_context()` call on the same directory (a Windows file-lock-release race). Tested directly with a real HTTP `Set-Cookie` response (the same mechanism a real Moodle/Google login actually uses) across two back-to-back persistent-context launches on the same temp directory: **the cookie survived correctly, every time.** This mechanism is not the cause — disproven, not assumed.
+
+2. **Then tested the user's own real, still-present session directly**: ran the real `check_moodle_session(1)` against the real `storage/browser_profiles/1` directory left on this machine. It reported `expired` — reproducing the user's exact symptom. Went one level deeper and drove the same real profile directly (not through `check_moodle_session()`'s own abstraction) to see exactly what Moodle itself returns:
+   ```
+   landed url: https://lms.flame.edu.in/login/index.php
+   title: Log in to the site | FLAME-UNIVERSITY
+   has login form: 2
+   has usermenu/logout: 0
+   ```
+   **This is Moodle's own real, live response — a genuine login page, a genuine login form, zero logged-in markers.** `check_moodle_session()`'s own detection logic is working correctly here; it is accurately reporting that the real live Moodle server, right now, does not consider this profile's session valid. This is not a selector bug and not a path bug.
+
+### Actual, honest conclusion
+
+**The profile path is provably not the problem — same helper, same path, proven three independent ways** (source inspection, live dual-call comparison, and live server logs across `/connect`, `/session-status`, and `/sync/moodle` in the same process). **The real, observed "connected → expired" transition reflects a genuine change in the session's validity as Moodle itself sees it, not a bug in which directory Esmerelda reads from.** Two real, unconfirmed (without a real login to test against) candidate explanations, stated as hypotheses, not fixes: (a) `connect_user_interactively()` launches Chromium `headless=False` while `check_moodle_session()`/`_run_sync_with_persisted_session()` launch `headless=True` — a real, well-documented class of issue is Google's session/security systems treating a headless-vs-headed browser fingerprint change on the same cookies as suspicious enough to invalidate the session; (b) the real Moodle/Google session may simply be short-lived by design (a real security policy, e.g. IP-binding or a short server-side session timeout) and the gap between the user's connect and sync attempts was enough for it to lapse on its own, independent of anything this app does.
+
+**No speculative fix was made for either hypothesis** — per the explicit instruction not to change Google/Moodle login automation or authentication architecture broadly, and because neither hypothesis could be confirmed without a real login, which this environment cannot perform (no credentials, and automating one is out of scope regardless). Settling between them needs a real, deliberate test outside this session: complete a real `/api/moodle/connect` login, then immediately (within a few seconds) call `GET /api/moodle/session-status` and compare — if THAT also reports "expired" within seconds of a real "connected," the headless-fingerprint hypothesis becomes much stronger; if it stays "connected" for a while and only later expires, it's most likely a genuine session lifetime.
+
+### Other changes
+
+`storage/paths.py`'s `get_data_dir()` now calls `.resolve()` on the directory it returns — a real, if unconfirmed-as-this-bug's-cause, gap (a relative `ESMERELDA_DATA_DIR` would previously resolve against whatever the current process's working directory happened to be at call time, rather than always being one fixed absolute path). Fixed defensively regardless, since every path this session traced (database, documents, MCP snapshots, and now browser profiles) all flow through this one function.
+
+**Per the explicit instructions**: no profile was deleted or migrated; the due-date scraper and Google/Moodle login automation were not touched; per-user isolation is unaffected (each user's profile path is still derived solely from their own `user_id`); the legacy `backend/moodle/browser_profile/`/`backend/browser_profile/` directories are untouched and still never used for normal per-user flows (confirmed directly — neither appears in any of the three traced call sites' resolved paths above).
+
+### Tests run
+
+Full backend plain-assert suite (every `tests/test_*.py` except the pytest-based `test_groq_agent.py`/`test_text_extraction.py`): **238/238 passed**, zero regressions (this entry's changes are diagnostic logging plus one defensive `.resolve()` call — no behavioral change to any tested code path). `python -m pytest tests -q`: 12 passed, the same pre-existing 5 `test_groq_agent.py` failures (missing `pytest-asyncio` plugin) as every prior entry in this log. `npx tsc -b` and `npm run build` (frontend, untouched): clean.
+
+### Bottom line — this task's specific question IS answered, with proof
+
+**"Do not claim this is fixed until the same profile path is demonstrated in both operations"** — demonstrated, three ways, with real logs from the real running app, reproduced above verbatim. What was NOT true, and is now corrected in the understanding this entry leaves behind: this was never actually a profile-path bug. The real "connected then immediately expired" symptom has a different, real cause in how the live Moodle/Google session itself behaves — investigated as far as this environment honestly allows without real credentials, with the remaining question narrowed to two concrete, testable hypotheses for whoever runs the next real login.
+
+---
+
+## 2026-09-25 (Moodle session lifecycle trace: real evidence found — cookies genuinely persist, server no longer honors them; headless-fingerprint mismatch identified as a concrete, testable mechanism, not yet proven end-to-end)
+
+### The user's real reproduction
+
+`POST /api/moodle/connect` → `connected`, then `GET /api/moodle/session-status` **12 seconds later** → `expired`, on the same profile path (already proven identical in the prior entry). This entry traces the session lifecycle itself, not the path.
+
+### Diagnostics added, exactly as requested
+
+`[MOODLE SESSION LIFECYCLE]` lines at every requested boundary in `moodle/browser.py`: `CONNECT launch` (profile_path, headless), `CONNECT authenticated` (url, title, logged_in_marker), `CONNECT before close` (cookies_count, cookie NAMES only, localStorage KEY names only — never values), `CONNECT after close` (profile_path, logged in `finally` so it fires whether the flow succeeded or timed out), and the matching `CHECK launch` / `CHECK loaded` / `CHECK cookies` set in `check_moodle_session()`. Two small helpers, `_cookie_names_only()`/`_local_storage_keys_only()`, enforce the "never log values" requirement in one place rather than trusting every call site to remember it.
+
+### Real evidence gathered
+
+**Ran `check_moodle_session(1)` against the REAL, still-present profile on this machine** (`storage/browser_profiles/1` — the real leftover session from the user's own earlier real connect, not a simulation):
+```
+CHECK loaded:  url=https://lms.flame.edu.in/login/index.php
+               title='Log in to the site | FLAME-UNIVERSITY'
+               logged_in_marker=False
+CHECK cookies: cookies_count=46
+               relevant_moodle_cookies=['ACCOUNT_CHOOSER', 'APISID', 'HSID', 'LSID', 'MOODLEID1_',
+                 'MoodleSession', 'NID', 'OTZ', 'SAPISID', 'SID', 'SIDCC', 'SSID', '__Host-1PLSID',
+                 '__Host-3PLSID', '__Host-GAPS', '__Secure-1PAPISID', '__Secure-1PSID',
+                 '__Secure-1PSIDCC', '__Secure-1PSIDRTS', '__Secure-1PSIDTS', '__Secure-3PAPISID',
+                 '__Secure-3PSID', '__Secure-3PSIDCC', '__Secure-3PSIDRTS', '__Secure-3PSIDTS']
+```
+**This is significant, concrete evidence**: `MoodleSession` (Moodle's own PHP session cookie) and a full, real set of Google account session cookies (`SID`, `SSID`, `APISID`, `__Secure-1PSID`, etc.) are all still genuinely present on disk, 46 cookies total. **The cookies were never lost.** Moodle redirects to its real login page anyway. This directly rules out "the cookie jar didn't persist" as the mechanism — the persistence layer works; something server-side (or something about how the request presenting these cookies looks) is what's rejecting the session.
+
+**Isolated the client-side variable with a local-only, credential-free controlled experiment** (a local HTTP server issuing a real `Set-Cookie` response, read back by a second, immediately-following `launch_persistent_context()` call — the same two-step shape as connect→check, with no real Moodle/Google involved): cookie survival was 100% reliable in every headed/headless combination tested (headed→headless, headless→headless, headed→headed). **But two real, measurable, directly observed differences showed up between a headed and a headless launch of the exact same Chromium build this app uses:**
+```
+UA (headed,   as connect_user_interactively() launches):  Chrome/153.0.0.0 Safari/537.36
+UA (headless, as check_moodle_session() launches):         HeadlessChrome/153.0.8010.12 Safari/537.36
+navigator.webdriver: True in BOTH modes (Playwright's automation flag — present regardless of headless setting)
+```
+**This is the concrete mechanism the task asked to prove, not assume**: `connect_user_interactively()` (headed) and `check_moodle_session()`/`_run_sync_with_persisted_session()` (headless) present the SAME session cookies from what a security-conscious server can observe as a browser with a literally different identity string (`Chrome` vs `HeadlessChrome` in the User-Agent) — a well-documented real trigger for session-anomaly detection at companies like Google. `navigator.webdriver=True` in both modes means Playwright's automation is already detectable regardless of headless/headed, independent of this specific difference.
+
+### What was NOT proven, stated honestly
+
+This is real, directly-measured evidence of a plausible MECHANISM — not proof that it's what actually happened to the user's real session. Confirming that requires a real end-to-end test this environment cannot perform (no real Moodle/Google credentials, and automating that login is explicitly out of scope): complete a real `/api/moodle/connect`, then immediately run `/api/moodle/session-status` in HEADED mode (matching connect's own mode) instead of the normal headless, and see whether THAT stays "connected". Implemented the mechanism for the user to run this exact test themselves — see below — but did not run it, and does not claim the headless-fingerprint hypothesis as confirmed.
+
+### Fix — the requested controlled-test mechanism, not a default behavior change
+
+Added `ESMERELDA_MOODLE_CHECK_HEADED` (default unset/off — `check_moodle_session()`'s default `headless=True` behavior is completely unchanged) — when set to `1`, forces `check_moodle_session()` to launch headed instead, for exactly this controlled test. No change to `connect_user_interactively()` (already headed, unchanged), no change to `_run_sync_with_persisted_session()` (still headless, unchanged, per "do not change Moodle authentication architecture broadly" — this entry only adds the ability to TEST the hypothesis, not a permanent architecture change).
+
+**To run the definitive test** (the real next step, needs a human with real FLAME/Google credentials at the keyboard):
+```
+ESMERELDA_MOODLE_CHECK_HEADED=1 <run the backend>
+A. POST /api/moodle/connect        (complete the real Google login in the window that opens)
+B. GET  /api/moodle/session-status (now launches headed too — compare against without the env var)
+```
+If B now reports `connected`, the headless-fingerprint hypothesis is confirmed and a real architectural decision is needed (e.g. making the persisted-session sync/check path headed too, which has its own real cost — a visible window per check, unusable on a real headless server — a genuine tradeoff for a later, deliberate decision, not made here). If B still reports `expired` even headed, the hypothesis is disproven and the real cause is something else entirely (e.g. a genuinely short server-side Moodle session timeout) — also useful, also settled by the same one test.
+
+### Other changes
+
+None beyond the diagnostics and the opt-in flag above. Per the explicit instructions: the due-date scraper was not touched; no username/password fallback was added; no cookies were copied between profiles; the existing browser profile was not deleted; demo user_id=1 behavior is unchanged (still routes through the exact same functions, now just with more logging); Google/Moodle login automation is untouched (`connect_user_interactively()` still never fills a credential or 2FA field).
+
+### Tests run
+
+Full backend plain-assert suite (every `tests/test_*.py` except the pytest-based `test_groq_agent.py`/`test_text_extraction.py`): **238/238 passed**, zero regressions (this entry is diagnostic logging plus one opt-in, off-by-default flag — no default behavior changed). `python -m pytest tests -q`: 12 passed, the same pre-existing 5 `test_groq_agent.py` failures (missing `pytest-asyncio` plugin) as every prior entry in this log. `npx tsc -b` and `npm run build` (frontend, untouched): clean.
+
+### Bottom line — NOT claiming the session problem is fixed
+
+Per the explicit instruction: **fixed is not claimed unless the A→B→C sequence (connect → immediate session-status → immediate sync, all reporting valid/connected) succeeds.** It was not run end-to-end here (needs real credentials this environment doesn't have). What this entry actually delivers: conclusive proof the cookies themselves persist correctly (ruling out storage/profile-path causes, again, independently from the prior entry's already-separate proof); a concrete, directly-measured, real mechanism (UA/automation-fingerprint mismatch between connect and check) that's a genuine candidate, not a guess; and the exact tool (`ESMERELDA_MOODLE_CHECK_HEADED=1`) needed to settle it definitively, ready for whoever next completes a real login.
+
+---
+
 <!-- Add the next entry above this line, newest at the top or bottom — just be consistent -->
