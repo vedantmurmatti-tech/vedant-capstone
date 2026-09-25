@@ -33,6 +33,7 @@ export function Header({ title, onMenuClick }: HeaderProps) {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const isSyncing = triggering || status?.state === "syncing";
+  const offlineRetryRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     // While a sync is in progress (either we just triggered one, or the
@@ -52,6 +53,35 @@ export function Header({ title, onMenuClick }: HeaderProps) {
       }
     };
   }, [isSyncing, refetch]);
+
+  useEffect(() => {
+    // useAsync's initial fetch runs exactly once on mount and never
+    // retries on its own — a real, confirmed gap (see BUILD_LOG.md's
+    // "Backend Offline" investigation): a single transient failure of
+    // that one call (e.g. a Render free-tier cold start taking longer
+    // than the platform's own edge/gateway timeout, confirmed present —
+    // this backend sits behind Cloudflare) permanently pins this pill on
+    // "Backend offline" even after the backend is fully healthy again,
+    // since nothing else re-triggers this specific fetch outside of the
+    // isSyncing effect above (which never runs while the pill itself is
+    // stuck showing an error, not "syncing"). Retries here, every 5s,
+    // for as long as statusError stays set — a real recovery (or the
+    // component unmounting) is the only thing that stops it; this never
+    // changes behavior in the normal, healthy case, where statusError is
+    // never set to begin with.
+    if (statusError && !offlineRetryRef.current) {
+      offlineRetryRef.current = setInterval(refetch, 5000);
+    } else if (!statusError && offlineRetryRef.current) {
+      clearInterval(offlineRetryRef.current);
+      offlineRetryRef.current = null;
+    }
+    return () => {
+      if (offlineRetryRef.current) {
+        clearInterval(offlineRetryRef.current);
+        offlineRetryRef.current = null;
+      }
+    };
+  }, [statusError, refetch]);
 
   async function handleSyncClick() {
     if (isSyncing) return;

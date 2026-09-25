@@ -2663,4 +2663,50 @@ The new Space took ~11s total for a short sentence (Space client init ~4s one-ti
 
 ---
 
+## 2026-09-25 (Urgent fix: "Backend Offline" stuck showing on the deployed frontend despite a fully healthy backend)
+
+**Scope**: `frontend/src/components/layout/Header.tsx` only. Backend untouched.
+
+### Traced exactly where "Backend offline" is determined
+
+1. `Header.tsx`'s `meta` derivation: `statusError ? {label: "Backend offline", ...} : ...` — driven entirely by the `error` returned from `useAsync(getMoodleSyncStatus, [])`.
+2. `getMoodleSyncStatus()` (`frontend/src/lib/api.ts`) → `apiFetch("/sync-status")` → `GET ${API_BASE}/api/sync-status`. **Not `/health`, not `/api/health`** — a real data endpoint, `/api/sync-status`, which was NOT among the four endpoints the user's own Render-log inspection confirmed as working (`/api/assignments`, `/api/courses`, `/api/documents`, `/api/dashboard/summary`).
+3. `API_BASE` comes from `import.meta.env.VITE_API_BASE_URL` (baked in at BUILD time by Vite, not read at runtime).
+
+### Two leading hypotheses tested directly against the real production deployment — both disproven
+
+1. **Wrong/missing `FRONTEND_ORIGIN` causing a silent CORS rejection** (a real, confirmed mechanism in `main.py`: CORS violations return a normal `200` in the *server's own* access logs — the browser is what discards the response — which would perfectly explain "Render logs show 200s" alongside "frontend shows offline"). Tested with a real `OPTIONS` preflight against `https://esmerelda-backend.onrender.com` using `Origin: https://esmerelda-frontend.onrender.com` (a guessed, then confirmed-real, frontend URL): **`access-control-allow-origin` correctly returned, HTTP 200.** CORS is correctly configured. Disproven.
+2. **Wrong `VITE_API_BASE_URL` baked into the deployed frontend build** (e.g. left at its `http://localhost:8000` default). Downloaded and inspected the REAL deployed frontend's own served JS bundle (`https://esmerelda-frontend.onrender.com/assets/index-*.js`) directly: it contains exactly `https://esmerelda-backend.onrender.com` as its `API_BASE` — no `localhost` string anywhere in the bundle. Disproven.
+3. **The specific endpoint itself, right now**: a real `GET https://esmerelda-backend.onrender.com/api/sync-status` with the real frontend's `Origin` header returned a real `200` with a real, correctly-CORS-headered JSON body in under 1 second. Not currently broken either.
+
+### Real root cause found: a confirmed architectural gap, not a config error
+
+`useAsync` (`frontend/src/lib/useAsync.ts`) fetches **exactly once on mount** (`useEffect(..., [...deps, reloadToken])` with a fixed dependency array) and **never automatically retries on failure** — the only way to get a fresh attempt is `refetch()`, called only from Header's own `isSyncing`-gated poll effect (which never runs while the pill is stuck on an *error*, not "syncing") or a manual sync-button click.
+
+Combined with a real, confirmed fact about the deployment: `https://esmerelda-backend.onrender.com` sits behind Cloudflare (`Server: cloudflare` on every real response header checked), and Render's free/starter tier is well known to spin a service down after inactivity — the first request after a cold start can take long enough to hit the platform's own edge/gateway timeout and fail outright, even though the backend then finishes booting and serves every subsequent request perfectly (exactly matching "Render logs show real 200s" — those are the *later*, already-warm requests the user's own log inspection saw).
+
+**The result**: if the browser's very first `/api/sync-status` call happens to land during/near a cold start and fails, the pill permanently shows "Backend offline" for the rest of that page's lifetime — even seconds later, once the backend is fully healthy — because nothing in the existing code ever tries that fetch again on its own.
+
+### Fix — the smallest change that closes the gap
+
+One new `useEffect` in `Header.tsx`, directly mirroring the existing `isSyncing` poll-effect's own pattern (same `useRef`/`setInterval`/cleanup shape, not a new abstraction): when `statusError` is set, retry `refetch()` every 5 seconds until it clears (a real recovery) or the component unmounts. Zero effect on the normal, healthy path — `statusError` is never set there, so this new effect never fires at all in that case. No change to `useAsync.ts` itself (kept generic/unchanged for its other consumers), no change to any backend file, no change to the CORS/env-var configuration that both turned out to already be correct.
+
+### Tests — real, not simulated-in-isolation
+
+- `npx tsc -b` / `npm run build`: clean.
+- **Real browser (Playwright) reproduction of the exact failure**: intercepted `/api/sync-status`, failed the first 2 real attempts (aborted, simulating a cold-start/timeout failure — the first 2 rather than 1 specifically to see past React StrictMode's dev-mode double-invoke of effects and isolate the NEW retry timer, not an unrelated double-mount, as the thing that recovers it), let the 3rd succeed:
+  ```
+  After 1s  - "Backend offline" shown: True   (attempts so far: 2, both failed)
+  After ~7s - "Backend offline" shown: False  (attempts so far: 3)
+  attempt timestamps (relative to page load): [0.49s, 0.50s, 5.55s]
+  ```
+  The third attempt fires at **5.55s — matching the new 5-second retry interval exactly** — and it succeeds, clearing the banner with no page reload and no manual action. This is the real health indicator becoming ONLINE, demonstrated end-to-end, not asserted.
+- Confirmed `/api/courses`, `/api/assignments`, `/api/documents`, `/api/dashboard/summary` still all return `200` against the same local backend used for the reproduction above — untouched by this change, as expected (Header.tsx's edit only touches the `/api/sync-status` retry path).
+
+### Root cause, stated plainly
+
+Not a backend problem, not a CORS misconfiguration, not a wrong build-time API URL — all three were directly tested against the real production deployment and ruled out. The real cause is that the frontend's one-shot health/sync-status check had no retry, so a single transient failure (most plausibly a Render cold-start/gateway-timeout on the very first request) left the UI permanently reporting "offline" long after the backend had actually recovered. Fixed with a self-healing retry, scoped to exactly the failure state it needs to cover.
+
+---
+
 <!-- Add the next entry above this line, newest at the top or bottom — just be consistent -->
