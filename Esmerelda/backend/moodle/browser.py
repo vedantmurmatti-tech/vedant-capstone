@@ -55,6 +55,40 @@ def _local_storage_keys_only(page) -> list[str]:
         return []
 
 
+_TRACKED_MOODLE_COOKIE_NAMES = ("MoodleSession", "MOODLEID1_")
+
+
+def _moodle_cookie_details(context) -> dict:
+    """Domain/path/expiry/session-vs-persistent for MoodleSession and
+    MOODLEID1_ specifically — see BUILD_LOG.md's session-lifecycle-deep-
+    dive entry, which found MoodleSession genuinely present right after a
+    real connect but later gone entirely from the same profile, while
+    MOODLEID1_ (which carries a real ~60-day expiry) survived — this
+    exists to make that comparison directly visible in logs going
+    forward, at both the CONNECT-before-close and CHECK-cookies points.
+    NEVER includes a cookie's value — domain/path/expiry/secure/httpOnly/
+    sameSite only, exactly the non-secret metadata Playwright's own
+    context.cookies() already separates from the value field."""
+    try:
+        cookies = {c["name"]: c for c in context.cookies() if c.get("name") in _TRACKED_MOODLE_COOKIE_NAMES}
+    except Exception:
+        return {}
+    details = {}
+    for name in _TRACKED_MOODLE_COOKIE_NAMES:
+        c = cookies.get(name)
+        if c is None:
+            details[name] = "ABSENT"
+            continue
+        expires = c.get("expires", -1)
+        kind = "SESSION-ONLY (no Expires/Max-Age — cleared at browser shutdown by cookie spec, " \
+               "independent of the persistent profile directory)" if expires == -1 else f"persistent, expires={expires}"
+        details[name] = (
+            f"present domain={c.get('domain')!r} path={c.get('path')!r} secure={c.get('secure')} "
+            f"httpOnly={c.get('httpOnly')} sameSite={c.get('sameSite')} kind={kind}"
+        )
+    return details
+
+
 def check_moodle_session(user_id: int, *, headless: bool = True) -> str:
     """Loads this user's own persisted Playwright profile (see
     get_user_browser_profile_dir()), navigates to Moodle, and reports
@@ -124,6 +158,8 @@ def check_moodle_session(user_id: int, *, headless: bool = True) -> str:
                 "[MOODLE SESSION LIFECYCLE]\nCHECK cookies:\n  cookies_count=%d\n  relevant_moodle_cookies=%s",
                 len(context.cookies()), _cookie_names_only(context),
             )
+            for name, detail in _moodle_cookie_details(context).items():
+                logger.info("[MOODLE SESSION LIFECYCLE]\nCHECK %s: %s", name, detail)
 
             if logged_in and not has_login_form:
                 logger.info("[MOODLE AUTH] Existing session valid — skipping login (user=%s)", user_id)
@@ -210,6 +246,8 @@ def connect_user_interactively(user_id: int, *, timeout_seconds: int = 180) -> s
                         "relevant_moodle_cookies=%s\n  local_storage_keys=%s",
                         len(context.cookies()), _cookie_names_only(context), _local_storage_keys_only(page),
                     )
+                    for name, detail in _moodle_cookie_details(context).items():
+                        logger.info("[MOODLE SESSION LIFECYCLE]\nCONNECT %s: %s", name, detail)
                     logger.info("[MOODLE AUTH] user=%s completed manual sign-in — session persisted", user_id)
                     return "connected"
 
