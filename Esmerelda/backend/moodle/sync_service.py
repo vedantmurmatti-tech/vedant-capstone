@@ -858,7 +858,22 @@ def _sync_course_resources(
 
 
 _DUE_DATE_PATTERN = re.compile(
-    r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s*(\d{1,2}\s+\w+\s+\d{4})\s+(\d{1,2}:\d{2})",
+    # Group 2: "D Month YYYY". Group 3: "H:MM" (24-hour) or "H:MM AM/PM"
+    # (12-hour — group 4 captures the AM/PM marker when present). The
+    # comma between the year and the time is optional (`,?`) because real
+    # Moodle installs commonly render this as e.g. "Friday, 18 September
+    # 2026, 11:59 PM" (a comma AND 12-hour AM/PM) rather than the plain
+    # 24-hour "Friday, 20 September 2026 11:59" this pattern originally
+    # only recognized — both are genuine, well-documented Moodle
+    # `userdate()` output shapes (which format a given site/theme uses
+    # depends on its configured calendar/date settings), not a guess at
+    # one specific site's rendering. Added specifically because the
+    # diagnostic logging this accompanies (see BUILD_LOG.md's due-date-
+    # trace entry) can directly confirm — the RAW DUE DATE TEXT trace
+    # line always shows the real captured text regardless of whether this
+    # pattern ends up matching it, so a real mismatch is never silent.
+    r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s*(\d{1,2}\s+\w+\s+\d{4}),?\s*"
+    r"(\d{1,2}:\d{2})\s*([AaPp][Mm])?",
     re.IGNORECASE,
 )
 
@@ -869,24 +884,58 @@ def _parse_due_date_match(match: re.Match) -> datetime | None:
     that naive-but-really-IST value against datetime.utcnow() elsewhere
     (urgency classification, due-soon notifications) silently skewed
     every comparison by 5:30 without ever showing up as a missing date."""
+    date_part, time_part, am_pm = match.group(2), match.group(3), match.group(4)
     try:
-        naive_ist = datetime.strptime(f"{match.group(2)} {match.group(3)}", "%d %B %Y %H:%M")
+        if am_pm:
+            naive_ist = datetime.strptime(f"{date_part} {time_part} {am_pm.upper()}", "%d %B %Y %I:%M %p")
+        else:
+            naive_ist = datetime.strptime(f"{date_part} {time_part}", "%d %B %Y %H:%M")
     except ValueError:
         return None
     return parse_moodle_datetime_to_utc(naive_ist)
 
 
+_DUE_DATE_DIAGNOSTICS = os.environ.get("ESMERELDA_DUE_DATE_DIAGNOSTICS", "1") != "0"
+# TEMPORARY diagnostic logging (see BUILD_LOG.md's due-date-trace entry) —
+# traces due_date end-to-end for real, live-Moodle assignments: raw text
+# found (or not), the window it was searched in, the parsed datetime, and
+# (at the call sites below) the value that actually landed in the
+# database. On by default (ESMERELDA_DUE_DATE_DIAGNOSTICS=0 disables it)
+# specifically so the NEXT real Render sync run prints this without a
+# redeploy-and-flip-a-flag round trip. Remove this flag and its call
+# sites once the real due-date pipeline is confirmed working end-to-end
+# against live Moodle — this was never previously verified against a
+# real instance (see this function's own prior docstring caveat).
+
+
 def _extract_due_date(text: str, assignment_name: str) -> datetime | None:
     position = text.find(assignment_name)
     if position == -1:
+        if _DUE_DATE_DIAGNOSTICS:
+            logger.info("[DUE DATE TRACE] ASSIGNMENT: %r (Timeline path)", assignment_name)
+            logger.info("[DUE DATE TRACE] RAW DUE DATE TEXT: <assignment name not found in ancestor text — cannot search>")
         return None
-    matches = list(_DUE_DATE_PATTERN.finditer(text[:position]))
+    window = text[:position]
+    matches = list(_DUE_DATE_PATTERN.finditer(window))
+    if _DUE_DATE_DIAGNOSTICS:
+        logger.info("[DUE DATE TRACE] ASSIGNMENT: %r (Timeline path)", assignment_name)
+        logger.info(
+            "[DUE DATE TRACE] DUE DATE HTML/SELECTOR: Timeline ancestor text preceding the assignment name "
+            "(up to 8 ancestor levels walked — see _sync_course_assignments()), searched with pattern %s",
+            _DUE_DATE_PATTERN.pattern,
+        )
+        logger.info("[DUE DATE TRACE] RAW DUE DATE TEXT: %r", window[-200:])
     if not matches:
+        if _DUE_DATE_DIAGNOSTICS:
+            logger.info("[DUE DATE TRACE] PARSED DATETIME: None (no date pattern matched in the ancestor text)")
         return None
-    return _parse_due_date_match(matches[-1])
+    result = _parse_due_date_match(matches[-1])
+    if _DUE_DATE_DIAGNOSTICS:
+        logger.info("[DUE DATE TRACE] PARSED DATETIME: %r (naive-UTC)", result)
+    return result
 
 
-def _extract_due_date_from_assignment_page(page_text: str) -> datetime | None:
+def _extract_due_date_from_assignment_page(page_text: str, *, assignment_name: str = "") -> datetime | None:
     """Best-effort: looks for Moodle's own "Due date" label on the
     assignment's own view page and parses the same
     "Weekday, D Month YYYY H:MM" pattern _extract_due_date() already
@@ -908,20 +957,48 @@ def _extract_due_date_from_assignment_page(page_text: str) -> datetime | None:
     same safe default every other best-effort field in this file already
     falls back to. Never treated as an error; a missing due date is not
     a sync failure."""
+    if _DUE_DATE_DIAGNOSTICS:
+        logger.info("[DUE DATE TRACE] ASSIGNMENT: %r (assignment-page path)", assignment_name)
+        logger.info(
+            "[DUE DATE TRACE] DUE DATE HTML/SELECTOR: plain-text search for /due date\\s*[:\\-]?\\s*/i on the "
+            "assignment's own view.php page body (page.locator(\"body\").inner_text()), then pattern %s "
+            "searched in the 100 characters right after that label",
+            _DUE_DATE_PATTERN.pattern,
+        )
     label_match = re.search(r"due date\s*[:\-]?\s*", page_text, re.IGNORECASE)
     if label_match is None:
+        if _DUE_DATE_DIAGNOSTICS:
+            logger.info(
+                "[DUE DATE TRACE] RAW DUE DATE TEXT: <no \"Due date\" label found anywhere on the page — "
+                "page_text length=%d, first 300 chars=%r>",
+                len(page_text), page_text[:300],
+            )
+            logger.info("[DUE DATE TRACE] PARSED DATETIME: None (no label to search from)")
         return None
     window = page_text[label_match.end():label_match.end() + 100]
+    if _DUE_DATE_DIAGNOSTICS:
+        logger.info("[DUE DATE TRACE] RAW DUE DATE TEXT: %r", window)
     date_match = _DUE_DATE_PATTERN.search(window)
     if date_match is None:
+        if _DUE_DATE_DIAGNOSTICS:
+            logger.info(
+                "[DUE DATE TRACE] PARSED DATETIME: None (\"Due date\" label found, but the text right after it "
+                "did not match the expected \"Weekday, D Month YYYY H:MM\" pattern — the real rendered format "
+                "may differ, e.g. 12-hour AM/PM or a comma before the time; see the raw text above)"
+            )
         return None
-    return _parse_due_date_match(date_match)
+    result = _parse_due_date_match(date_match)
+    if _DUE_DATE_DIAGNOSTICS:
+        logger.info("[DUE DATE TRACE] PARSED DATETIME: %r (naive-UTC)", result)
+    return result
 
 
 _MAX_ASSIGNMENT_DESCRIPTION_CHARS = 2000
 
 
-def _fetch_assignment_page_details(page, assignment_url: str) -> tuple[str | None, str | None, "datetime | None"]:
+def _fetch_assignment_page_details(
+    page, assignment_url: str, *, assignment_name: str = ""
+) -> tuple[str | None, str | None, "datetime | None"]:
     """Best-effort only: visits the assignment's own page ONCE and reads
     its submission-status table, its description/instructions text, AND
     its own "Due date" label — combined into a single function
@@ -985,9 +1062,14 @@ def _fetch_assignment_page_details(page, assignment_url: str) -> tuple[str | Non
 
     try:
         page_text = page.locator("body").inner_text()
-        due_date = _extract_due_date_from_assignment_page(page_text)
-    except Exception:
-        pass
+        due_date = _extract_due_date_from_assignment_page(page_text, assignment_name=assignment_name)
+    except Exception as exc:
+        if _DUE_DATE_DIAGNOSTICS:
+            logger.info(
+                "[DUE DATE TRACE] ASSIGNMENT: %r — due-date extraction raised %s: %s (treated as no due date, "
+                "not a sync failure)",
+                assignment_name, type(exc).__name__, exc,
+            )
 
     return submission_status, description, due_date
 
@@ -1261,23 +1343,34 @@ def _sync_course_assignments(page, active_courses: list[dict], moodle_url: str) 
     persisted_moodle_ids: set[str] = set()
     for candidate in candidates:
         try:
-            submission_status, description, page_due_date = _fetch_assignment_page_details(page, candidate["href"])
+            submission_status, description, page_due_date = _fetch_assignment_page_details(
+                page, candidate["href"], assignment_name=candidate["name"]
+            )
             # The Timeline text's own due-date extraction (candidate["due_date"])
             # is preferred — unchanged, still the primary source. The
             # assignment page's own "Due date" label is only used as a
             # fallback when the Timeline text search found nothing, never as
             # an override of a value it already found.
+            final_due_date = candidate["due_date"] or page_due_date
             saved = save_assignment(
                 moodle_id=candidate["moodle_id"],
                 course_name=candidate["course_name"],
                 name=candidate["name"],
                 submission_url=candidate["href"],
-                due_date=candidate["due_date"] or page_due_date,
+                due_date=final_due_date,
                 submission_status=submission_status,
                 course_moodle_id=candidate.get("course_moodle_id"),
                 assignment_url=candidate["href"],
                 description=description,
             )
+            if _DUE_DATE_DIAGNOSTICS:
+                logger.info(
+                    "[DUE DATE TRACE] ASSIGNMENT: %r (Timeline path) — chosen due_date=%r "
+                    "(source=%s) — DB DUE DATE: %r",
+                    candidate["name"], final_due_date,
+                    "timeline_text" if candidate["due_date"] else ("assignment_page" if page_due_date else "none"),
+                    saved.due_date if saved is not None else "<save_assignment returned None — see warning below>",
+                )
         except Exception as exc:
             # One assignment's unusual/malformed page (e.g. a group
             # assignment with a different submission-status DOM shape, or
@@ -1345,7 +1438,9 @@ def _sync_course_page_assignments(
                 continue  # already found and persisted via the Timeline — not a new discovery
 
             discovered += 1
-            submission_status, description, due_date = _fetch_assignment_page_details(page, candidate["href"])
+            submission_status, description, due_date = _fetch_assignment_page_details(
+                page, candidate["href"], assignment_name=candidate["name"]
+            )
             saved = save_assignment(
                 moodle_id=moodle_id,
                 course_name=candidate["course_name"],
@@ -1383,6 +1478,11 @@ def _sync_course_page_assignments(
                 "[SYNC DEBUG] assignment written to DB via course-page discovery: course='%s' name=%r",
                 candidate["course_name"], candidate["name"],
             )
+            if _DUE_DATE_DIAGNOSTICS:
+                logger.info(
+                    "[DUE DATE TRACE] ASSIGNMENT: %r (course-page path) — DB DUE DATE: %r",
+                    candidate["name"], saved.due_date,
+                )
         else:
             logger.warning(
                 "[SYNC DEBUG] course-page assignment discovered but NOT persisted (save_assignment returned "
