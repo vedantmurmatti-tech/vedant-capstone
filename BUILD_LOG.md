@@ -2350,4 +2350,60 @@ Applies uniformly regardless of source — LLM prose, the deterministic fallback
 
 ---
 
+## 2026-09-25 (Due-date structure comparison: real Render [DUE DATE TRACE] logs for two specific assignments)
+
+**Real evidence used this time**: the user pasted the actual raw log output from a real Render sync (run_id=1, `2026-09-25T04:47:43Z`–`05:00:18Z`, 7 courses, 19 assignments, all via the course-page discovery path since Timeline discovered none this run). This entry traces two specific real assignments from that real text — nothing here is synthetic or guessed, except where explicitly marked as a reproduction of the real observed shape.
+
+### The two real trace entries, verbatim from Render
+
+**"Final EXAM PART B- Submission"** (DESG322 · Tangible Interfaces):
+```
+RAW DUE DATE TEXT: <no "Due date" label found anywhere on the page — page_text length=1439, first 300 chars='Skip to sidebar navigation menu\nSkip to page footer\nSkip to main content\nBlocks\nSkip to - Close\nSite home\nDashboard\nCalendar\nPrivate files\nMy Courses\n7\nOnly courses in progress\nBUAN301-...\nBUAN302-...'>
+PARSED DATETIME: None (no label to search from)
+DB DUE DATE: None
+```
+
+**"Group Documentation : Electronics and Form"** (same course, DESG322):
+```
+RAW DUE DATE TEXT: 'Saturday, 12 September 2026, 1:59 PM\nTime remaining\tAssignment was submitted 12 hours 24 mins early\n'
+PARSED DATETIME: datetime.datetime(2026, 9, 12, 8, 29) (naive-UTC)
+DB DUE DATE: datetime.datetime(2026, 9, 12, 8, 29)
+```
+(`08:29` naive-UTC displays back via `to_ist_isoformat()` as `2026-09-12T13:59:00+05:30` — exactly the real "Sep 12, 1:59 PM" the frontend already showed for this assignment.)
+
+### Root cause, established from this real comparison, not guessed
+
+Both assignments went through the exact same code (`_extract_due_date_from_assignment_page()`, "assignment-page path") — this **rules out a code-path branching bug**. The real difference is in what Moodle actually rendered on each page: "Group Documentation" has a real submission on file (note the trace's own "Assignment was submitted 12 hours 24 mins early" text) and Moodle's `submissionstatustable` for a submitted assignment includes a "Due date" row directly, right next to "Time remaining" — this is now directly confirmed, not assumed. "Final EXAM PART B- Submission" has **no submission on file** (per the same live sync's course-page discovery step), and its page's full body text (1439 characters — genuinely captured, not empty or an error) contains the phrase "Due date" **nowhere at all**.
+
+**Every one of the 19 real assignments this sync discovered shows the identical "no Due date label" pattern except this one submitted assignment** — 18 of 19 real, live assignments had no "Due date" text anywhere on their own page. That is far too consistent to be 18 independent real "no due date configured" cases — it is much better explained by: Moodle's `assign/view.php` page for an assignment **with no submission on file** renders a materially different, shorter info box (no full submission-status table, or one that omits the due-date row when there's nothing to compare "time remaining" against) than the one for an assignment that DOES have a submission — matching mod_assign's real, documented behavior of showing progressively more detail (submission status, time remaining, due date all together) once a submission exists, versus a lighter "not submitted yet" state beforehand.
+
+**What could NOT be conclusively proven from this log alone, stated honestly**: whether the remaining 18 assignments' pages genuinely never render "Due date" as plain body text before a submission exists (a real Moodle/theme behavior this project would then need a second extraction strategy for), or whether `page.goto()` is landing somewhere unexpected for them (the near-identical "Skip to sidebar navigation menu...My Courses\n7\nOnly courses in progress..." opening text recurring across four different real courses' assignment pages is at least worth ruling out, even though it may simply be this Moodle theme's persistent site-wide navigation drawer, which would appear at the top of `body.inner_text()` on every real page including a genuine assign/view.php — not necessarily a wrong-page symptom). This entry does not claim to have resolved which of these it is.
+
+### Fix — a real, evidence-backed extraction strategy, plus better diagnostics for what's still unresolved
+
+1. **`_extract_due_date_from_assignment_page()` now searches the submission-status table's own text FIRST** (a new `status_table_text` parameter, populated by `_fetch_assignment_page_details()` from the SAME `table.submissionstatustable` element it already locates for `submission_status` — no new page visit, no new selector guessed), falling back to the whole page body search only if the table doesn't have it. This is a direct, targeted extraction from the exact real structure the "Group Documentation" trace proved Moodle actually renders — not a guess. The search/log logic was factored into a shared `_search_due_date_label()` helper so both sources are tried and logged identically.
+2. **Diagnostics extended** (`_fetch_assignment_page_details()`): now logs, once per assignment, `requested_url` (what was asked for) vs `landed_url`/`landed_title` (what Playwright actually reached), and whether `#intro`/`submissionstatustable` were present — specifically so the NEXT real Render sync's logs can finally distinguish "this really is the assignment's own page, and it genuinely has no due date" from "navigation didn't land where expected," which THIS log, despite being real, didn't carry enough information to settle either way.
+3. **Timezone handling was not touched** — the trace itself proves it's correct: `13:59 IST` on a Saturday round-tripped to `08:29` naive-UTC and back to `13:59 IST`/`1:59 PM`, exactly matching the real frontend's own displayed value for this assignment.
+4. **Assignment discovery was not touched** — the real sync already discovered and persisted all 19 real assignments (`courses_discovered=7 assignments_discovered=19 ... assignments_persisted=19`); this entry only concerns the `due_date` field on assignments that were already being found and written correctly.
+
+### Regression tests added, for both real observed structures
+
+`tests/test_assignment_description.py`, two new fixtures reproducing the two real structures this trace confirmed (not invented shapes):
+- `/due-date-in-status-table` — a `submissionstatustable` containing `Due date` / `Saturday, 12 September 2026, 1:59 PM` next to `Time remaining` / a submission-timing line, exactly mirroring the real "Group Documentation" trace. New check **7**: confirms this parses to `2026-09-12T08:29:00` (naive-UTC) via the new table-scoped path, and `submission_status` extraction from the same table is unaffected.
+- `/no-due-date-status-table` — a real `submissionstatustable` present (`Submission status: No attempt`) but with genuinely no due-date row, exactly mirroring the real "Final EXAM PART B- Submission" trace. New check **8**: confirms this correctly returns `None` — not a crash, not a fabricated date — even though a status table IS present, proving the new table-scoped fallback doesn't over-match.
+
+### Tests run
+
+- `tests/test_assignment_description.py`: **11/11** (the 2 new checks above + the 9 pre-existing).
+- Backend suite directly touching due dates/assignment discovery: `test_sync_service.py` 56/56, `test_course_page_assignment_discovery.py` 10/10, `test_course_query_matching.py` 15/15, `test_assignment_course_mapping.py` 9/9.
+- Full backend plain-assert suite (every `tests/test_*.py`): `test_assignment_action_planner.py` 9/9, `test_document_download_limit.py` 13/13, `test_document_retrieval.py` 11/11, `test_document_skip_logic.py` 34/34, `test_deployment_readiness.py` 9/9, `test_production_readiness.py` 12/12, `test_resource_dedup.py` 10/10, `test_sync_staleness.py` 18/18, `test_followups.py` 9/9, `test_text_extraction.py` 10/10 — **216/216 total**, zero regressions.
+- `python -m pytest tests -q --ignore=tests/test_sync_service.py`: 12 passed, the same pre-existing 5 `test_groq_agent.py` failures (missing `pytest-asyncio` plugin) as every prior entry in this log.
+- `npx tsc -b` and `npm run build` (frontend, untouched by this entry): clean.
+
+### Honest bottom line
+
+**Not claiming this is fully fixed.** What's demonstrated: the exact real structure Moodle uses for a submitted assignment ("Group Documentation") is now correctly and specifically handled, with a real regression test proving it, and diagnostics exist for the next sync to finally reveal whether the other 18 real assignments' pages genuinely lack a due date or whether something about how they're being reached needs a further fix. The real, concrete next step is the same as before: trigger one more Render sync and read the new `landed_url`/`landed_title`/`has_#intro`/`has_submissionstatustable` trace lines for one of the still-`None` assignments (e.g. "Final EXAM PART B- Submission" again) — that will settle it either way, which this entry's available evidence could not.
+
+---
+
 <!-- Add the next entry above this line, newest at the top or bottom — just be consistent -->

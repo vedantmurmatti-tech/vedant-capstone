@@ -935,61 +935,96 @@ def _extract_due_date(text: str, assignment_name: str) -> datetime | None:
     return result
 
 
-def _extract_due_date_from_assignment_page(page_text: str, *, assignment_name: str = "") -> datetime | None:
-    """Best-effort: looks for Moodle's own "Due date" label on the
-    assignment's own view page and parses the same
-    "Weekday, D Month YYYY H:MM" pattern _extract_due_date() already
-    looks for in Timeline text, searched in a bounded window right after
-    that label. This is what lets the course-page secondary discovery
-    path (_sync_course_page_assignments(), which has no Timeline text at
-    all to read a due date from — see its own docstring) recover a real
-    due date instead of always leaving one null, and gives the Timeline
-    path itself a second chance to find one if the Timeline text search
-    ever misses. Reuses the exact date pattern/parsing already
-    established for Timeline text rather than assuming a different
-    format, since both are almost certainly rendered by the same
-    underlying Moodle date-formatting call.
-
-    NOT verified against a real, live Moodle instance from this
-    environment (no real Moodle account was available) — if the actual
-    theme doesn't render "Due date" as visible label text near the real
-    date, or formats the date/time differently, this returns None, the
-    same safe default every other best-effort field in this file already
-    falls back to. Never treated as an error; a missing due date is not
-    a sync failure."""
-    if _DUE_DATE_DIAGNOSTICS:
-        logger.info("[DUE DATE TRACE] ASSIGNMENT: %r (assignment-page path)", assignment_name)
-        logger.info(
-            "[DUE DATE TRACE] DUE DATE HTML/SELECTOR: plain-text search for /due date\\s*[:\\-]?\\s*/i on the "
-            "assignment's own view.php page body (page.locator(\"body\").inner_text()), then pattern %s "
-            "searched in the 100 characters right after that label",
-            _DUE_DATE_PATTERN.pattern,
-        )
-    label_match = re.search(r"due date\s*[:\-]?\s*", page_text, re.IGNORECASE)
+def _search_due_date_label(text: str, *, source: str) -> tuple[datetime | None, str]:
+    """Searches ONE text blob for a "Due date" label followed by a real
+    date, logging exactly what it found — factored out so
+    _extract_due_date_from_assignment_page() can try more than one real
+    source (the submission-status table specifically, then the whole
+    page body) without duplicating the search/log logic for each.
+    Returns (parsed_datetime_or_None, human-readable outcome label) —
+    the label is used by the caller to log which source (if either)
+    actually supplied the value that ends up in the database."""
+    label_match = re.search(r"due date\s*[:\-]?\s*", text, re.IGNORECASE)
     if label_match is None:
         if _DUE_DATE_DIAGNOSTICS:
             logger.info(
-                "[DUE DATE TRACE] RAW DUE DATE TEXT: <no \"Due date\" label found anywhere on the page — "
-                "page_text length=%d, first 300 chars=%r>",
-                len(page_text), page_text[:300],
+                "[DUE DATE TRACE] %s: no \"Due date\" label found — text length=%d, first 300 chars=%r",
+                source, len(text), text[:300],
             )
-            logger.info("[DUE DATE TRACE] PARSED DATETIME: None (no label to search from)")
-        return None
-    window = page_text[label_match.end():label_match.end() + 100]
+        return None, f"{source}: no label"
+    window = text[label_match.end():label_match.end() + 100]
     if _DUE_DATE_DIAGNOSTICS:
-        logger.info("[DUE DATE TRACE] RAW DUE DATE TEXT: %r", window)
+        logger.info("[DUE DATE TRACE] %s: RAW DUE DATE TEXT: %r", source, window)
     date_match = _DUE_DATE_PATTERN.search(window)
     if date_match is None:
         if _DUE_DATE_DIAGNOSTICS:
             logger.info(
-                "[DUE DATE TRACE] PARSED DATETIME: None (\"Due date\" label found, but the text right after it "
-                "did not match the expected \"Weekday, D Month YYYY H:MM\" pattern — the real rendered format "
-                "may differ, e.g. 12-hour AM/PM or a comma before the time; see the raw text above)"
+                "[DUE DATE TRACE] %s: label found, but the text right after it did not match the expected "
+                "date pattern — the real rendered format may differ from what's currently recognized "
+                "(see the raw text above)",
+                source,
             )
-        return None
+        return None, f"{source}: label found, pattern did not match"
     result = _parse_due_date_match(date_match)
     if _DUE_DATE_DIAGNOSTICS:
-        logger.info("[DUE DATE TRACE] PARSED DATETIME: %r (naive-UTC)", result)
+        logger.info("[DUE DATE TRACE] %s: PARSED DATETIME: %r (naive-UTC)", source, result)
+    return result, f"{source}: matched"
+
+
+def _extract_due_date_from_assignment_page(
+    page_text: str, *, assignment_name: str = "", status_table_text: str | None = None
+) -> datetime | None:
+    """Best-effort: looks for Moodle's own "Due date" label on the
+    assignment's own view page and parses the same
+    "Weekday, D Month YYYY H:MM"-family pattern _extract_due_date()
+    already looks for in Timeline text, searched in a bounded window
+    right after that label. This is what lets the course-page secondary
+    discovery path (_sync_course_page_assignments(), which has no
+    Timeline text at all to read a due date from — see its own
+    docstring) recover a real due date instead of always leaving one
+    null, and gives the Timeline path itself a second chance to find one
+    if the Timeline text search ever misses.
+
+    Tries TWO real sources, in order, per the real evidence a live
+    Render sync's [DUE DATE TRACE] logs actually produced (see
+    BUILD_LOG.md's due-date-structure-comparison entry): a real
+    successfully-parsed assignment's raw text was
+    "Saturday, 12 September 2026, 1:59 PM\\nTime remaining\\t..." —
+    i.e. "Due date" appears INSIDE Moodle's own submission-status table
+    (the same table _fetch_assignment_page_details() already locates
+    for submission_status), alongside "Time remaining"/submission info.
+    That's a real, directly-observed Moodle structure, not a guess, so
+    it's tried FIRST and preferred when it matches (`status_table_text`,
+    passed in by the caller, which already has this element located).
+    Falls back to a search of the whole page body (the original,
+    broader search) when the table doesn't have it — e.g. an assignment
+    with no submission recorded yet might render this table differently
+    or not include the same due-date phrasing in it.
+
+    A real, still-open question this function's own logging is designed
+    to help answer (see BUILD_LOG.md): whether an assignment that comes
+    up completely empty in BOTH sources genuinely has no due date
+    configured in Moodle, or whether page.goto() actually landed
+    somewhere other than that assignment's own view.php page for it —
+    _fetch_assignment_page_details() (the caller) now also logs the
+    real page.url()/page.title() actually reached, specifically to let
+    a future real sync's logs distinguish those two cases, which this
+    function alone cannot from text content alone."""
+    if _DUE_DATE_DIAGNOSTICS:
+        logger.info("[DUE DATE TRACE] ASSIGNMENT: %r (assignment-page path)", assignment_name)
+        logger.info(
+            "[DUE DATE TRACE] DUE DATE HTML/SELECTOR: (1) table.submissionstatustable/.submissionstatustable "
+            "text, if present, searched first; (2) page.locator(\"body\").inner_text() as a fallback — both "
+            "searched via /due date\\s*[:\\-]?\\s*/i then pattern %s in the 100 characters right after that label",
+            _DUE_DATE_PATTERN.pattern,
+        )
+
+    if status_table_text:
+        result, outcome = _search_due_date_label(status_table_text, source="submission-status table")
+        if result is not None:
+            return result
+
+    result, outcome = _search_due_date_label(page_text, source="page body")
     return result
 
 
@@ -1036,17 +1071,49 @@ def _fetch_assignment_page_details(
     submission_status: str | None = None
     description: str | None = None
     due_date: datetime | None = None
+    status_table_text: str | None = None
     try:
         page.goto(assignment_url, wait_until="domcontentloaded", timeout=20000)
         page.wait_for_timeout(1000)
     except Exception:
         return None, None, None
 
+    if _DUE_DATE_DIAGNOSTICS:
+        # Disambiguates, for the NEXT real sync's logs, "this assignment
+        # genuinely has no due date on a real assign/view.php page" from
+        # "page.goto() didn't actually land on that page" — real
+        # evidence (see BUILD_LOG.md's due-date-structure-comparison
+        # entry) showed several assignments' page bodies opening with
+        # what looks like shared site-wide navigation-drawer text
+        # regardless of course, which this alone can't rule in or out
+        # without seeing the real URL/title Playwright actually landed
+        # on.
+        try:
+            landed_url = page.url
+            landed_title = page.title()
+        except Exception as exc:
+            landed_url, landed_title = f"<unavailable: {exc}>", "<unavailable>"
+        has_intro = False
+        has_status_table = False
+        try:
+            has_intro = page.locator("#intro").first.count() > 0
+        except Exception:
+            pass
+        try:
+            has_status_table = page.locator("table.submissionstatustable, .submissionstatustable").first.count() > 0
+        except Exception:
+            pass
+        logger.info(
+            "[DUE DATE TRACE] ASSIGNMENT: %r — requested_url=%r landed_url=%r landed_title=%r "
+            "has_#intro=%s has_submissionstatustable=%s",
+            assignment_name, assignment_url, landed_url, landed_title, has_intro, has_status_table,
+        )
+
     try:
         status_table = page.locator("table.submissionstatustable, .submissionstatustable").first
         if status_table.count() > 0:
-            text = status_table.inner_text()
-            match = re.search(r"Submission status\s*\n?\s*(.+)", text)
+            status_table_text = status_table.inner_text()
+            match = re.search(r"Submission status\s*\n?\s*(.+)", status_table_text)
             submission_status = match.group(1).strip()[:255] if match else None
     except Exception:
         pass
@@ -1062,7 +1129,9 @@ def _fetch_assignment_page_details(
 
     try:
         page_text = page.locator("body").inner_text()
-        due_date = _extract_due_date_from_assignment_page(page_text, assignment_name=assignment_name)
+        due_date = _extract_due_date_from_assignment_page(
+            page_text, assignment_name=assignment_name, status_table_text=status_table_text
+        )
     except Exception as exc:
         if _DUE_DATE_DIAGNOSTICS:
             logger.info(
