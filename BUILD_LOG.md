@@ -2575,4 +2575,92 @@ Per the explicit instruction: **fixed is not claimed unless the A→B→C sequen
 
 ---
 
+## 2026-09-25 (Moodle session lifecycle deep dive: headed-vs-headless disproven by the user's own real test; concrete cookie-level evidence found; no fix made — server-side, not client-side)
+
+### Starting point: the user's own real, definitive test
+
+The user ran the exact controlled experiment the prior entry set up (`ESMERELDA_MOODLE_CHECK_HEADED=1`, real connect, immediate headed session-status check) and confirmed: **`GET /api/moodle/session-status` still redirects to the login page even in headed mode.** The headless-vs-headed fingerprint mismatch, while real (proven in the prior entry), is **not sufficient on its own** to explain the symptom. This entry goes one level deeper: the cookie/session lifecycle itself.
+
+### Diagnostics added, exactly as requested
+
+`_moodle_cookie_details()` in `moodle/browser.py` — domain/path/secure/httpOnly/sameSite/session-vs-persistent classification for `MoodleSession` and `MOODLEID1_` specifically (never the cookie value), logged as `[MOODLE SESSION LIFECYCLE]\nCONNECT MoodleSession: ...` / `CHECK MoodleSession: ...` right at the "before close" and "cookies" points already added in the prior entry.
+
+### Real evidence gathered, step by step
+
+1. **`MoodleSession` is confirmed to be a true HTTP session cookie** — no `Expires`/`Max-Age` attribute at all (`expires=-1`), read directly from the real, still-on-disk profile:
+   ```
+   CHECK MoodleSession: present domain='lms.flame.edu.in' path='/' secure=False httpOnly=False
+     sameSite=Lax kind=SESSION-ONLY (no Expires/Max-Age)
+   CHECK MOODLEID1_:    present domain='lms.flame.edu.in' path='/' ... kind=persistent, expires=1795501589...
+   ```
+   This matches Moodle's real, standard default configuration (session cookie unless "remember me" is used) — not a guess.
+
+2. **Ruled out, via a real controlled test with no Moodle/Google involved**, the hypothesis that Chromium/Playwright's persistent-context mechanism categorically fails to persist session-only cookies across a `context.close()` + reopen cycle: a genuine `Set-Cookie` with no `Expires`, closed and reopened via `launch_persistent_context()`, **survived correctly every time**. The client-side storage mechanism is not the failure point — confirmed directly, a second time (the prior entry already ruled this out generically; this repeats it specifically for a true session-only cookie, the exact shape `MoodleSession` has).
+
+3. **Directly observed a real, reproducible state transition on this machine's own leftover real session**: an initial read of the real profile showed `MoodleSession` present (46 cookies total, matching the earlier entry's own listing). After running `check_moodle_session()` once more (a single real navigation to `lms.flame.edu.in`, which redirected to the login page), **four immediately-following, independent reads of the same profile all showed `MoodleSession` completely gone** (45 cookies, consistently, across all four). This is not flakiness — it's a real, one-directional, deterministic transition, and its timing (present, then gone immediately after the first request that got redirected to login) points squarely at **the server itself sending a cookie-clearing `Set-Cookie: MoodleSession=; expires=<past>` in its response once it recognizes the presented session as no longer valid** — the disappearance is a *symptom* of server-side invalidation, not evidence that the client ever lost the cookie on its own.
+
+### What this evidence rules out, and what it leaves as the real, remaining explanation
+
+Ruled out, with direct evidence across this and the prior two entries: profile-path mismatch, generic Chromium/Playwright cookie-persistence failure (headed or headless), and headless-vs-headed browser fingerprint as a *sufficient* cause (the user's own real headed-mode test still failed). What's left, consistent with everything actually observed — a real login succeeding, a real `MoodleSession` cookie genuinely being set with no client-side loss, and the session becoming server-side invalid within roughly 12 seconds (the user's own timed reproduction) — points at the **Moodle server itself**, not this codebase: either a real, unusually short server-side session lifetime for this specific deployment, or (a common institutional Moodle configuration) single-concurrent-session enforcement invalidating the just-created session the moment any other request for the same account arrives — plausible here specifically because this investigation's own repeated diagnostic navigations to `lms.flame.edu.in` throughout this session could themselves have been exactly such a competing request. Neither of these is something a code change in this repository can fix.
+
+### No speculative fix was made, per the explicit instruction
+
+Only diagnostics were added. No change to session validation logic, no change to the connect/check flow's control structure, no new fallback.
+
+### Tests run
+
+Full backend plain-assert suite (every `tests/test_*.py` except the pytest-based `test_groq_agent.py`/`test_text_extraction.py`): **238/238 passed**, zero regressions. `python -m pytest tests -q`: one run produced a transient `INTERNALERROR` while collecting `test_sync_service.py` — traced directly to running it concurrently with the full plain-assert batch (both are real, heavy, Playwright/Chromium-driving processes competing for the same machine's resources at the same time); the SAME standalone plain-assert run of that exact file, run without that contention, passed 56/56 cleanly, and a clean, non-concurrent re-run of the full pytest suite afterward confirmed it: 12 passed, the same pre-existing 5 `test_groq_agent.py` failures as every prior entry in this log, no new failures. `npx tsc -b` and `npm run build` (frontend, untouched): clean.
+
+### Concrete evidence, and the smallest fix — answered directly, as asked
+
+**Why Moodle is returning to the login page**: not a lost cookie, not a wrong profile, not (solely) a headless/headed browser fingerprint. A real `MoodleSession` session cookie is genuinely issued and genuinely persisted by the client; the Moodle *server* stops honoring it within roughly 12 seconds of a real, successful login, and then actively clears it from the client on the next request that presents it. This is server-side behavior this repository's code does not control.
+
+**The smallest fix**: there isn't a client-side code fix to make — every client-side hypothesis available to test without real Moodle admin access has now been directly tested and ruled out. The smallest *concrete next step* is not a code change: it is checking FLAME Moodle's own server-side session configuration (session lifetime / concurrent-session-limit settings), which needs a Moodle administrator or console access this investigation does not have — the same conclusion this session's earlier Moodle-SSO investigation entries already reached about needing FLAME admin involvement for a different, related question (self-service Web Service tokens).
+
+---
+
+## 2026-09-25 (Urgent live-demo fix: TTS provider switched from Remsky/Kokoro-TTS-Zero to Pendrokar/Kokoro-TTS, CPU mode, to escape an exhausted shared ZeroGPU quota)
+
+**Scope**: `api/tts.py` only. No frontend, Orb, Moodle, sync, or API-shape change — `POST /api/speech`'s request/response contract is byte-for-byte identical, so nothing downstream needed to change.
+
+### Root cause
+
+`Remsky/Kokoro-TTS-Zero` runs exclusively on Hugging Face's shared "ZeroGPU" hardware pool, which has a real, per-account quota this project has hit repeatedly during ordinary testing (documented in earlier entries). Exhausted again, causing every `/api/speech` call to fail with a real 502 — not fixable by retrying, since it's the provider's own quota, not a bug in this code.
+
+### Fix
+
+Switched to `Pendrokar/Kokoro-TTS`, a separate public Gradio Space running the same Kokoro model, using its `/generate_first` endpoint with `use_gpu=False` — **verified directly against the Space's own live `/gradio_api/info` schema before writing any code**, not guessed from the task description: the real endpoint name is `/generate_first` (the task said `/generate`, which doesn't exist as a named endpoint — `/generate_first` and `/generate_all` do; `/generate_first` was chosen since its return shape — `(audio, status_text)` — matches this module's existing tuple-result handling exactly, while `/generate_all` returns a single "Stream Audio" value with different handling implications). Confirmed real parameters: `text`, `voice`, `speed`, `use_gpu`, `lang` — exactly as specified — and confirmed `af_sarah` (the existing configured voice) is present in this Space's own voice enum, so the current default voice was kept unchanged rather than switched to `af_heart`.
+
+Running with `use_gpu=False` means these requests never touch the shared ZeroGPU pool at all — they run on the Space's own ordinary CPU hardware, which has no such quota.
+
+All arguments passed as named kwargs to `client.submit()` (`text=`, `voice=`, `speed=`, `use_gpu=`, `lang=`, `api_name=`), per instruction, so the Space's real parameter order can never silently shift under this code.
+
+Added the requested `[TTS] Using Pendrokar/Kokoro-TTS CPU fallback` log line.
+
+**Kept unchanged, exactly as instructed**: the singleton `gradio_client.Client` architecture and its lock; `_HTTP_TIMEOUT_SECONDS`/`_RESULT_TIMEOUT_SECONDS`; `HF_TOKEN` authentication (still required, still fails fast with a clear message if unset); the `TtsUnavailableError`/generic-502 error-collapsing behavior in `routes.py` (untouched); the tuple-result-to-audio-bytes handling; the Orb's audio-energy analysis and `stripMarkdownForSpeech` (both entirely frontend-side, never touched).
+
+### Tests
+
+- **Real, direct call to `synthesize_speech()`**: returned 168,044 bytes; parsed with Python's `wave` module as a genuinely valid WAV — mono, 24kHz, 3.5s duration. Not just "got bytes back" — actually verified as playable audio structure.
+- **Real end-to-end `POST /api/speech`** against a locally running instance of the actual FastAPI app: `HTTP 200`, `Content-Type: audio/wav`, 255,644 bytes — the exact same response shape the frontend has always received.
+- **Real server logs confirm the full expected sequence**, including the requested log line:
+  ```
+  [TTS] request started: 65 chars, voice=af_sarah
+  [TTS] HF_TOKEN check: configured=True, prefix=hf_, length=37
+  [TTS] Space client initializing (space=Pendrokar/Kokoro-TTS, authenticated=True)
+  [TTS] Space client ready in 4.18s
+  [TTS] Using Pendrokar/Kokoro-TTS CPU fallback
+  [TTS] space request started (api_name=/generate_first)
+  [TTS] space request completed in 6.74s
+  [TTS] audio received: 255644 bytes; total generation time 11.22s
+  ```
+- Backend plain-assert suite (every `tests/test_*.py`): re-run in full — none of them import or exercise `api/tts.py` at all (confirmed via `grep` before assuming so), so this is a regression check, not a direct test of the change; all passing, consistent with every prior entry in this log.
+- `npx tsc -b` and `npm run build`: clean — confirms zero frontend changes were needed, as intended.
+
+### Note on total latency
+
+The new Space took ~11s total for a short sentence (Space client init ~4s one-time, generation ~7s) — CPU inference is inherently slower than GPU. For a live demo, the client-init cost is paid once per backend process lifetime (the singleton pattern already in place), so only the ~7s generation time repeats per request. Not addressed further here — out of scope for this urgent fix, which was about reliability (working at all) over speed.
+
+---
+
 <!-- Add the next entry above this line, newest at the top or bottom — just be consistent -->
